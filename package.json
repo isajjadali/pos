@@ -1,0 +1,25 @@
+{
+  "name": "barcode-label-generator",
+  "version": "1.0.0",
+  "description": "Generate barcode labels from Excel/CSV for local printing",
+  "type": "module",
+  "scripts": {
+    "dev": "npm run dev --prefix web",
+    "build:web": "npm run build --prefix web",
+    "preview:web": "npm run preview --prefix web",
+    "generate": "node generate-labels.js products.csv",
+    "ingest": "node ingest-receipts.js",
+    "seed-products": "node seed-receipt-data.js",
+    "import-receipts": "node build-products-from-receipts.js",
+    "start": "node generate-labels.js products.csv"
+  },
+  "bin": {
+    "barcode-labels": "./generate-labels.js"
+  },
+  "dependencies": {
+    "bwip-js": "^4.11.4",
+    "pdfkit": "^0.20.2",
+    "supabase": "^2.121.0",
+    "xlsx": "^0.18.5"
+  }
+}
