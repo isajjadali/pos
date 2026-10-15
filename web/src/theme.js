@@ -1,0 +1,96 @@
+/** Naive UI theme — higher contrast for forms, tables, toggles */
+export const themeOverrides = {
+  common: {
+    primaryColor: "#0f766e",
+    primaryColorHover: "#0d9488",
+    primaryColorPressed: "#115e59",
+    primaryColorSuppl: "#14b8a6",
+    borderRadius: "8px",
+    borderRadiusSmall: "6px",
+    textColor1: "#111827",
+    textColor2: "#374151",
+    textColor3: "#4b5563",
+    borderColor: "#9ca3af",
+    dividerColor: "#d1d5db",
+    placeholderColor: "#6b7280",
+    fontWeightStrong: "600",
+  },
+  Checkbox: {
+    sizeMedium: "20px",
+    sizeSmall: "18px",
+    border: "2px solid #6b7280",
+    borderChecked: "2px solid #0f766e",
+    borderFocus: "2px solid #0f766e",
+    colorChecked: "#0f766e",
+    checkMarkColor: "#ffffff",
+    boxShadowFocus: "0 0 0 3px rgba(15, 118, 110, 0.35)",
+    labelFontWeight: "500",
+  },
+  Switch: {
+    railColor: "#9ca3af",
+    railColorActive: "#0f766e",
+    buttonColor: "#ffffff",
+    boxShadowFocus: "0 0 0 3px rgba(15, 118, 110, 0.35)",
+  },
+  Radio: {
+    dotColorActive: "#0f766e",
+    boxShadowActive: "0 0 0 2px rgba(15, 118, 110, 0.25)",
+    buttonBorderColorActive: "#0f766e",
+  },
+  Button: {
+    fontWeightStrong: "600",
+    colorPrimary: "#0f766e",
+    colorHoverPrimary: "#0d9488",
+    colorPressedPrimary: "#115e59",
+    borderPrimary: "1px solid #0f766e",
+    textColorPrimary: "#ffffff",
+  },
+  Input: {
+    border: "1px solid #9ca3af",
+    borderHover: "1px solid #0f766e",
+    borderFocus: "1px solid #0f766e",
+    boxShadowFocus: "0 0 0 2px rgba(15, 118, 110, 0.25)",
+  },
+  Select: {
+    peers: {
+      InternalSelection: {
+        border: "1px solid #9ca3af",
+        borderHover: "1px solid #0f766e",
+        borderActive: "1px solid #0f766e",
+        borderFocus: "1px solid #0f766e",
+        boxShadowFocus: "0 0 0 2px rgba(15, 118, 110, 0.25)",
+      },
+    },
+  },
+  DataTable: {
+    borderColor: "#d1d5db",
+    thColor: "#e5e7eb",
+    thTextColor: "#111827",
+    tdColor: "#ffffff",
+    thFontWeight: "600",
+  },
+  Card: {
+    borderColor: "#d1d5db",
+    titleFontWeight: "600",
+  },
+  Menu: {
+    itemColorActive: "rgba(15, 118, 110, 0.14)",
+    itemTextColorActive: "#0f766e",
+    itemIconColorActive: "#0f766e",
+    itemColorActiveHover: "rgba(15, 118, 110, 0.2)",
+    itemTextColor: "#374151",
+    itemTextColorHover: "#111827",
+  },
+  Layout: {
+    siderColor: "#eef2f6",
+    color: "#f3f4f6",
+  },
+  Form: {
+    labelFontWeight: "600",
+    labelTextColor: "#111827",
+  },
+  Steps: {
+    indicatorTextColorProcess: "#ffffff",
+    indicatorColorProcess: "#0f766e",
+  },
+};

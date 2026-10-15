@@ -17,6 +17,7 @@ import { supabaseConfigured } from "../lib/supabase.js";
 import { listStockMovements, receiveStock, adjustStock, listLowStockProducts } from "../services/inventory.js";
 import { listProducts } from "../services/products.js";
 import { listActiveVendorOptions } from "../services/vendors.js";
+import { refreshProductCatalog } from "../services/productCatalog.js";
 
 const message = useMessage();
 const movements = ref([]);
@@ -66,6 +67,7 @@ async function submitReceive() {
     await receiveStock(receiveForm.value);
     message.success("Stock received");
     showReceive.value = false;
+    await refreshProductCatalog().catch(() => {});
     await load();
   } catch (e) {
     message.error(e.message);
@@ -77,6 +79,7 @@ async function submitAdjust() {
     await adjustStock(adjustForm.value);
     message.success("Stock adjusted");
     showAdjust.value = false;
+    await refreshProductCatalog().catch(() => {});
     await load();
   } catch (e) {
     message.error(e.message);

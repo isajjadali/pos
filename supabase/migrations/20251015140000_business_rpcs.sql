@@ -267,7 +267,7 @@ begin
   returning id into v_job_id;
 
   insert into barcode_print_job_items (barcode_print_job_id, product_id, requested_quantity, reconciled_quantity)
-  values (p_job_id, p_product_id, p_requested_quantity, p_reconciled_quantity);
+  values (v_job_id, p_product_id, p_requested_quantity, p_reconciled_quantity);
 
   return v_job_id;
 end;

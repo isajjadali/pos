@@ -1,18 +1,20 @@
 <script setup>
 import { ref, onMounted, h } from "vue";
-import { NButton, NDataTable, NModal, NList, NListItem, useMessage } from "naive-ui";
+import { NButton, NDataTable, NModal, NSpace, useMessage } from "naive-ui";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
+import ReceiptPreview from "../components/ReceiptPreview.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { listSales, getSale, saleGrossProfit } from "../services/sales.js";
 import { formatPkr } from "../utils/format.js";
 import { getSettings } from "../services/settings.js";
+import { openReceiptPrintWindow } from "../utils/receipt.js";
 
 const message = useMessage();
 const rows = ref([]);
 const loading = ref(false);
 const detailOpen = ref(false);
 const detail = ref(null);
-const storeName = ref("Dollar World by WABz");
+const receiptSettings = ref({});
 
 const columns = [
   { title: "Reference", key: "sale_reference" },
@@ -26,14 +28,19 @@ const columns = [
   },
 ];
 
+async function loadSettings() {
+  if (!supabaseConfigured) return;
+  const s = await getSettings();
+  if (s) receiptSettings.value = s;
+}
+
 async function load() {
   if (!supabaseConfigured) return;
   loading.value = true;
   try {
     const res = await listSales();
     rows.value = res.rows;
-    const s = await getSettings();
-    if (s?.store_name) storeName.value = s.store_name;
+    await loadSettings();
   } catch (e) {
     message.error(e.message);
   } finally {
@@ -43,27 +50,14 @@ async function load() {
 
 async function openSale(id) {
   detail.value = await getSale(id);
+  await loadSettings();
   detailOpen.value = true;
 }
 
 function printReceipt() {
   if (!detail.value) return;
-  const { sale, items } = detail.value;
-  const html = `
-    <html><head><title>Receipt</title></head><body style="font-family:monospace;width:280px">
-    <h3>${storeName.value}</h3>
-    <div>${sale.sale_reference}</div>
-    <div>${new Date(sale.completed_at).toLocaleString()}</div>
-    <hr/>
-    ${items.map((i) => `<div>${i.product_name_snapshot} x${i.quantity} @ ${i.unit_selling_price} = ${i.line_total}</div>`).join("")}
-    <hr/>
-    <div>Total: ${sale.total_amount}</div>
-    <div>Cash: ${sale.amount_received ?? ""}</div>
-    <div>Change: ${sale.change_due ?? ""}</div>
-    </body></html>`;
-  const w = window.open("", "_blank");
-  w.document.write(html);
-  w.print();
+  const ok = openReceiptPrintWindow(detail.value.sale, detail.value.items, receiptSettings.value);
+  if (!ok) message.warning("Allow pop-ups to print receipt");
 }
 
 onMounted(load);
@@ -74,17 +68,25 @@ onMounted(load);
     <h1 style="margin-top: 0">Sales history</h1>
     <SupabaseRequiredAlert />
     <NDataTable :loading="loading" :columns="columns" :data="rows" />
-    <NModal v-model:show="detailOpen" preset="card" title="Sale details" style="width: 520px">
+    <NModal v-model:show="detailOpen" preset="card" title="Sale & receipt" style="width: min(920px, 96vw)">
       <template v-if="detail">
-        <p><strong>{{ detail.sale.sale_reference }}</strong></p>
-        <NList>
-          <NListItem v-for="i in detail.items" :key="i.id">
-            {{ i.product_name_snapshot }} × {{ i.quantity }} — {{ formatPkr(i.line_total) }}
-          </NListItem>
-        </NList>
-        <p>Total: {{ formatPkr(detail.sale.total_amount) }}</p>
-        <p>Gross profit: {{ formatPkr(saleGrossProfit(detail.items)) }}</p>
-        <NButton type="primary" @click="printReceipt">Print receipt</NButton>
+        <NSpace align="start" :size="20" wrap item-style="flex: 1; min-width: 280px">
+          <div style="flex: 1; min-width: 200px">
+            <p><strong>{{ detail.sale.sale_reference }}</strong></p>
+            <p>Total: {{ formatPkr(detail.sale.total_amount) }}</p>
+            <p>Gross profit: {{ formatPkr(saleGrossProfit(detail.items)) }}</p>
+            <NSpace>
+              <NButton type="primary" @click="printReceipt">Print receipt</NButton>
+            </NSpace>
+          </div>
+          <div style="flex: 1; min-width: 280px">
+            <ReceiptPreview
+              :sale="detail.sale"
+              :items="detail.items"
+              :settings="receiptSettings"
+            />
+          </div>
+        </NSpace>
       </template>
     </NModal>
   </div>

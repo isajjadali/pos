@@ -16,7 +16,8 @@ import {
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { parseCsv, rowsToObjects, IMPORT_FIELD_OPTIONS, SAMPLE_CSV } from "../utils/csv.js";
-import { importRow, recordImportJob } from "../services/importProducts.js";
+import { importProductsBulk, recordImportJob } from "../services/importProducts.js";
+import { refreshProductCatalog } from "../services/productCatalog.js";
 
 const message = useMessage();
 const step = ref(1);
@@ -25,6 +26,7 @@ const records = ref([]);
 const mapping = ref({});
 const duplicateBehavior = ref("add_stock");
 const importing = ref(false);
+const importProgress = ref({ done: 0, total: 0 });
 const results = ref([]);
 
 const systemFields = IMPORT_FIELD_OPTIONS.filter((f) => f.value !== "skip");
@@ -82,29 +84,35 @@ async function runImport() {
   if (!supabaseConfigured) return;
   importing.value = true;
   results.value = [];
-  let ok = 0;
-  let fail = 0;
-  for (const raw of records.value) {
-    const mapped = mapRecord(raw);
-    try {
-      if (!mapped.name?.trim()) throw new Error("Missing name");
-      const res = await importRow(mapped, duplicateBehavior.value);
-      results.value.push({ name: mapped.name, status: res.action });
-      ok++;
-    } catch (e) {
-      results.value.push({ name: mapped.name || "?", status: `error: ${e.message}` });
-      fail++;
-    }
+  importProgress.value = { done: 0, total: records.value.length };
+
+  const mappedRows = records.value.map((raw) => mapRecord(raw));
+
+  try {
+    const { results: bulkResults, success, failed, total } = await importProductsBulk(
+      mappedRows,
+      duplicateBehavior.value,
+      {
+        onProgress: (p) => {
+          importProgress.value = p;
+        },
+      }
+    );
+    results.value = bulkResults;
+    await recordImportJob({
+      filename: "upload.csv",
+      total,
+      success,
+      failed,
+    });
+    await refreshProductCatalog().catch(() => {});
+    step.value = 4;
+    message.success(`Import done: ${success} ok, ${failed} failed`);
+  } catch (e) {
+    message.error(e.message || "Import failed");
+  } finally {
+    importing.value = false;
   }
-  await recordImportJob({
-    filename: "upload.csv",
-    total: records.value.length,
-    success: ok,
-    failed: fail,
-  });
-  importing.value = false;
-  step.value = 4;
-  message.success(`Import done: ${ok} ok, ${fail} failed`);
 }
 </script>
 
@@ -154,7 +162,12 @@ async function runImport() {
       <h3>Preview (first 20 rows)</h3>
       <NDataTable :columns="columns" :data="previewRows" :max-height="300" />
       <NSpace style="margin-top: 16px">
-        <NButton :loading="importing" type="primary" @click="runImport">Confirm import</NButton>
+        <NButton :loading="importing" type="primary" @click="runImport">
+          Confirm import
+          <template v-if="importing && importProgress.total">
+            ({{ importProgress.done }} / {{ importProgress.total }})
+          </template>
+        </NButton>
         <NButton @click="step = 2">Back</NButton>
       </NSpace>
     </div>

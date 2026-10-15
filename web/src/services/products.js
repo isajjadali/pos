@@ -1,4 +1,13 @@
 import { requireSupabase } from "../lib/supabase.js";
+import { refreshProductCatalog } from "./productCatalog.js";
+
+async function syncCatalog() {
+  try {
+    await refreshProductCatalog();
+  } catch {
+    /* catalog will refresh on next login */
+  }
+}
 
 export async function listProducts({
   search = "",
@@ -53,6 +62,7 @@ export async function createProduct(payload) {
     p_low_stock_threshold: Math.max(0, Math.floor(Number(payload.low_stock_threshold) || 5)),
   });
   if (error) throw error;
+  await syncCatalog();
   return data;
 }
 
@@ -76,6 +86,7 @@ export async function updateProduct(id, payload) {
   if (!row.name) throw new Error("Product name is required");
   const { data, error } = await sb.from("products").update(row).eq("id", id).select().single();
   if (error) throw error;
+  await syncCatalog();
   return data;
 }
 
@@ -88,5 +99,33 @@ export async function deactivateProduct(id) {
     .select()
     .single();
   if (error) throw error;
+  await syncCatalog();
   return data;
+}
+
+export async function deleteProductsBulk(ids) {
+  const sb = requireSupabase();
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (!unique.length) return { deleted: 0, failed: [] };
+  const { data, error } = await sb.rpc("delete_products_bulk", {
+    p_product_ids: unique,
+  });
+  if (error) throw error;
+  await syncCatalog();
+  return {
+    deleted: data?.deleted ?? 0,
+    failed: data?.failed ?? [],
+  };
+}
+
+export async function deactivateProductsBulk(ids) {
+  const sb = requireSupabase();
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (!unique.length) return 0;
+  const { data, error } = await sb.rpc("deactivate_products_bulk", {
+    p_product_ids: unique,
+  });
+  if (error) throw error;
+  await syncCatalog();
+  return data ?? 0;
 }

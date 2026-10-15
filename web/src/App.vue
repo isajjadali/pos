@@ -1,9 +1,10 @@
 <script setup>
 import { NConfigProvider, NMessageProvider, NDialogProvider } from "naive-ui";
+import { themeOverrides } from "./theme.js";
 </script>
 
 <template>
-  <NConfigProvider>
+  <NConfigProvider :theme-overrides="themeOverrides">
     <NMessageProvider>
       <NDialogProvider>
         <RouterView />

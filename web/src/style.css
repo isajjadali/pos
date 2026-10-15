@@ -1,8 +1,9 @@
 :root {
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   line-height: 1.5;
-  color: #1f2329;
-  background: #fff;
+  color: #111827;
+  background: #f3f4f6;
+  --app-primary: #0f766e;
 }
 
 * {
@@ -11,8 +12,21 @@
 
 body {
   margin: 0;
+  background: #f3f4f6;
 }
 
 h1 {
   font-size: 1.5rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+/* Data table row checkboxes — extra visible on light rows */
+.n-data-table .n-checkbox-box {
+  border-width: 2px !important;
+}
+
+.n-data-table-th--selection .n-checkbox-box,
+.n-data-table-td--selection .n-checkbox-box {
+  background-color: #fff;
 }

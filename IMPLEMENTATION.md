@@ -31,6 +31,10 @@ In Dashboard → **SQL Editor**, run each file in order:
 2. `supabase/migrations/20251015130000_product_vendor_rpcs.sql`
 3. `supabase/migrations/20251015130100_products_low_stock_flag.sql`
 4. `supabase/migrations/20251015140000_business_rpcs.sql`
+5. `supabase/migrations/20251015150000_bulk_import_products.sql`
+6. `supabase/migrations/20251015160000_delete_products_bulk.sql`
+7. `supabase/migrations/20251015170000_fix_bulk_import_empty_numeric.sql`
+8. `supabase/migrations/20251015180000_receipt_template_settings.sql`
 
 ## Phase status
 

@@ -4,9 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k -n bridge,vite -c blue,green \"node scripts/zebra-bridge.mjs\" \"vite --host 127.0.0.1 --port 5173\"",
+    "dev:vite-only": "vite --host 127.0.0.1 --port 5173",
+    "zebra-bridge": "node scripts/zebra-bridge.mjs",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "concurrently -k -n bridge,vite -c blue,green \"node scripts/zebra-bridge.mjs\" \"vite preview\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.3",
@@ -19,6 +21,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.8",
+    "concurrently": "^9.2.1",
     "vite": "^8.3.0"
   }
 }

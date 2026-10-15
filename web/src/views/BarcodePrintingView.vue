@@ -1,37 +1,37 @@
 <script setup>
-import { ref, onMounted, h } from "vue";
+import { ref, onMounted, h, computed } from "vue";
 import {
   NButton,
   NSpace,
   NInput,
   NDataTable,
-  NModal,
   NInputNumber,
   NRadioGroup,
   NRadio,
   useMessage,
 } from "naive-ui";
-import { createApp } from "vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
-import BarcodePrintSheet from "../components/BarcodePrintSheet.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { listProductsForPrinting, reconcilePrint, listPrintJobs } from "../services/barcodes.js";
 import { getSettings } from "../services/settings.js";
+import { buildBatchZpl } from "../utils/zebraZpl.js";
+import { resolveBrowserPrintBase, sendZplToZebra } from "../utils/zebraBrowserPrint.js";
+
+/** Fixed label size for now (mm) — always 40 × 25 */
+const labelSize = { w: 40, h: 25 };
 
 const message = useMessage();
 const rows = ref([]);
 const search = ref("");
 const loading = ref(false);
+const printing = ref(false);
+const printingRowId = ref(null);
 const selected = ref([]);
 const printMode = ref("unprinted");
 const customQty = ref(1);
-const showReconcile = ref(false);
-const reconcileQty = ref(0);
-const pendingPrint = ref([]);
-const labelSize = ref({ w: 50, h: 30 });
 const jobs = ref([]);
 
-const columns = [
+const columns = computed(() => [
   { type: "selection" },
   { title: "Name", key: "name", ellipsis: true },
   { title: "Barcode", key: "barcode", width: 120 },
@@ -42,18 +42,26 @@ const columns = [
     key: "print",
     width: 90,
     render: (row) =>
-      h(NButton, { size: "small", onClick: () => printOne(row) }, () => "Print"),
+      h(
+        NButton,
+        {
+          size: "small",
+          loading: printing.value && printingRowId.value === row.id,
+          disabled: printing.value && printingRowId.value !== row.id,
+          onClick: () => printOne(row),
+        },
+        () => "Print"
+      ),
   },
-];
+]);
 
-async function load() {
+async function load({ silent = false } = {}) {
   if (!supabaseConfigured) return;
-  loading.value = true;
+  if (!silent) loading.value = true;
   try {
     rows.value = await listProductsForPrinting({ search: search.value });
     jobs.value = await listPrintJobs(15);
-    const s = await getSettings();
-    if (s) labelSize.value = { w: Number(s.label_width_mm) || 50, h: Number(s.label_height_mm) || 30 };
+    await getSettings();
   } catch (e) {
     message.error(e.message);
   } finally {
@@ -69,67 +77,71 @@ function buildLabels(product, count) {
   return labels;
 }
 
-function openPrintWindow(labels) {
-  const mount = document.createElement("div");
-  document.body.appendChild(mount);
-  const app = createApp(BarcodePrintSheet, {
-    labels,
-    widthMm: labelSize.value.w,
-    heightMm: labelSize.value.h,
-  });
-  app.mount(mount);
-  setTimeout(() => {
-    app.unmount();
-    mount.remove();
-  }, 3000);
+function qtyForRow(row) {
+  if (printMode.value === "unprinted") return Math.max(0, row.unprinted_barcode_qty || 0);
+  if (printMode.value === "current_stock") return Math.max(0, row.current_stock || 0);
+  return Math.max(1, customQty.value);
+}
+
+function buildBatchFromRows(list) {
+  const batch = [];
+  for (const row of list) {
+    const qty = qtyForRow(row);
+    if (qty > 0) batch.push({ product: row, requested: qty });
+  }
+  return batch;
+}
+
+async function runPrint(batch) {
+  if (!batch.length) {
+    message.warning("Nothing to print — check quantity / pending labels.");
+    return;
+  }
+
+  printing.value = true;
+  printingRowId.value = batch.length === 1 ? batch[0].product.id : null;
+  try {
+    let allLabels = [];
+    for (const item of batch) {
+      allLabels = allLabels.concat(buildLabels(item.product, item.requested));
+    }
+
+    const zpl = buildBatchZpl(allLabels, labelSize.w, labelSize.h);
+    await sendZplToZebra(zpl);
+
+    for (const item of batch) {
+      await reconcilePrint(item.product.id, printMode.value, item.requested, item.requested);
+    }
+
+    message.success("Labels sent to printer.");
+    await load({ silent: true });
+  } catch (e) {
+    message.error(e.message || "Print failed");
+  } finally {
+    printing.value = false;
+    printingRowId.value = null;
+  }
 }
 
 function printOne(row) {
-  let qty = 1;
-  if (printMode.value === "unprinted") qty = Math.max(1, row.unprinted_barcode_qty || 0);
-  else if (printMode.value === "current_stock") qty = Math.max(1, row.current_stock || 0);
-  else qty = customQty.value;
-  pendingPrint.value = [{ product: row, requested: qty }];
-  reconcileQty.value = qty;
-  showReconcile.value = true;
+  const qty = qtyForRow(row);
+  if (qty <= 0) {
+    message.warning("No labels to print for this product.");
+    return;
+  }
+  runPrint([{ product: row, requested: qty }]);
 }
 
 function printSelected() {
   const list = rows.value.filter((r) => selected.value.includes(r.id));
   if (!list.length) return message.warning("Select products");
-  const batch = [];
-  for (const row of list) {
-    let qty = 1;
-    if (printMode.value === "unprinted") qty = Math.max(0, row.unprinted_barcode_qty || 0);
-    else if (printMode.value === "current_stock") qty = Math.max(0, row.current_stock || 0);
-    else qty = customQty.value;
-    if (qty > 0) batch.push({ product: row, requested: qty });
-  }
-  pendingPrint.value = batch;
-  reconcileQty.value = batch[0]?.requested || 0;
-  showReconcile.value = true;
+  runPrint(buildBatchFromRows(list));
 }
 
-async function confirmPrinted() {
-  try {
-    let allLabels = [];
-    for (const item of pendingPrint.value) {
-      const labels = buildLabels(item.product, item.requested);
-      allLabels = allLabels.concat(labels);
-      const reconciled =
-        pendingPrint.value.length === 1 ? reconcileQty.value : item.requested;
-      await reconcilePrint(item.product.id, printMode.value, item.requested, reconciled);
-    }
-    openPrintWindow(allLabels);
-    showReconcile.value = false;
-    message.success("Print job recorded. Pending qty updated.");
-    await load();
-  } catch (e) {
-    message.error(e.message);
-  }
-}
-
-onMounted(load);
+onMounted(() => {
+  load();
+  resolveBrowserPrintBase().catch(() => {});
+});
 </script>
 
 <template>
@@ -143,11 +155,16 @@ onMounted(load);
         <NRadio value="custom">Custom quantity</NRadio>
       </NSpace>
     </NRadioGroup>
-    <NInputNumber v-if="printMode === 'custom'" v-model:value="customQty" :min="1" style="width: 120px; margin-bottom: 12px" />
+    <NInputNumber
+      v-if="printMode === 'custom'"
+      v-model:value="customQty"
+      :min="1"
+      style="width: 120px; margin-bottom: 12px"
+    />
     <NSpace style="margin-bottom: 12px">
       <NInput v-model:value="search" placeholder="Search" clearable @keyup.enter="load" />
       <NButton @click="load">Search</NButton>
-      <NButton type="primary" @click="printSelected">Print selected</NButton>
+      <NButton type="primary" :loading="printing" @click="printSelected">Print selected</NButton>
     </NSpace>
     <NDataTable
       v-model:checked-row-keys="selected"
@@ -158,14 +175,5 @@ onMounted(load);
     />
     <h3>Recent print jobs</h3>
     <pre style="font-size: 12px">{{ jobs.length }} jobs loaded</pre>
-
-    <NModal v-model:show="showReconcile" preset="dialog" title="Confirm labels printed?">
-      <p>How many labels did you actually print? (Updates pending barcode qty only — stock unchanged.)</p>
-      <NInputNumber v-model:value="reconcileQty" :min="0" style="width: 100%" />
-      <template #action>
-        <NButton @click="showReconcile = false">Cancel</NButton>
-        <NButton type="primary" @click="confirmPrinted">Printed — update counts</NButton>
-      </template>
-    </NModal>
   </div>
 </template>

@@ -1,4 +1,5 @@
 import { requireSupabase } from "../lib/supabase.js";
+import { findProductByCodeCached, isProductCatalogReady, searchProductsCached } from "./productCatalog.js";
 
 export async function listOpenOrders() {
   const sb = requireSupabase();
@@ -70,31 +71,41 @@ export async function cancelOrder(orderId) {
   return setOrderStatus(orderId, "cancelled");
 }
 
-export async function addProductToOrder(orderId, product) {
+export async function addProductToOrder(orderId, product, addQty = 1) {
   const sb = requireSupabase();
-  const { data: existing } = await sb
+  const delta = Math.max(1, Math.floor(Number(addQty) || 1));
+  const { data: rows, error: fetchError } = await sb
     .from("pos_order_items")
     .select("*")
     .eq("pos_order_id", orderId)
     .eq("product_id", product.id)
-    .maybeSingle();
+    .order("created_at", { ascending: true });
+  if (fetchError) throw fetchError;
 
-  if (existing) {
-    const qty = existing.quantity + 1;
-    const line = qty * Number(existing.unit_selling_price);
+  const list = rows ?? [];
+  if (list.length > 0) {
+    const primary = list[0];
+    const mergedExtra = list.slice(1).reduce((s, i) => s + Number(i.quantity), 0);
+    if (list.length > 1) {
+      const dupIds = list.slice(1).map((i) => i.id);
+      const { error: delError } = await sb.from("pos_order_items").delete().in("id", dupIds);
+      if (delError) throw delError;
+    }
+    const qty = Number(primary.quantity) + mergedExtra + delta;
+    const unit = Number(primary.unit_selling_price);
     const { error } = await sb
       .from("pos_order_items")
-      .update({ quantity: qty, line_total: line })
-      .eq("id", existing.id);
+      .update({ quantity: qty, line_total: qty * unit })
+      .eq("id", primary.id);
     if (error) throw error;
   } else {
     const price = Number(product.selling_price) || 0;
     const { error } = await sb.from("pos_order_items").insert({
       pos_order_id: orderId,
       product_id: product.id,
-      quantity: 1,
+      quantity: delta,
       unit_selling_price: price,
-      line_total: price,
+      line_total: price * delta,
     });
     if (error) throw error;
   }
@@ -122,12 +133,15 @@ export async function removeOrderItem(itemId, orderId) {
 }
 
 export async function findProductByBarcode(barcode) {
-  const sb = requireSupabase();
   const term = String(barcode ?? "").trim();
   if (!term) return null;
+  if (isProductCatalogReady()) {
+    return findProductByCodeCached(term);
+  }
+  const sb = requireSupabase();
   const { data, error } = await sb
     .from("products")
-    .select("*")
+    .select("id, name, barcode, sku, external_product_id, selling_price, current_stock")
     .eq("is_active", true)
     .or(`barcode.eq.${term},sku.eq.${term},external_product_id.eq.${term}`)
     .limit(1)
@@ -137,17 +151,28 @@ export async function findProductByBarcode(barcode) {
 }
 
 export async function searchProductsForPos(term) {
-  const sb = requireSupabase();
   const q = String(term ?? "").trim();
   if (!q) return [];
+  if (isProductCatalogReady()) {
+    return searchProductsCached(q);
+  }
+  const sb = requireSupabase();
   const { data, error } = await sb
     .from("products")
     .select("id, name, barcode, sku, selling_price, current_stock")
     .eq("is_active", true)
-    .or(`name.ilike.%${q}%,barcode.ilike.%${q}%,sku.ilike.%${q}%`)
+    .or(
+      `name.ilike.%${q}%,barcode.ilike.%${q}%,sku.ilike.%${q}%,external_product_id.ilike.%${q}%`
+    )
     .limit(20);
   if (error) throw error;
   return data ?? [];
+}
+
+/** Instant search when catalog is loaded (no await). */
+export function searchProductsForPosLocal(term) {
+  if (!isProductCatalogReady()) return null;
+  return searchProductsCached(term);
 }
 
 export async function setOrderDiscount(orderId, discount) {
@@ -172,6 +197,18 @@ export async function completeSale(orderId, { discount = 0, amountReceived = 0 }
   const sb = requireSupabase();
   const { data, error } = await sb.rpc("complete_pos_sale", {
     p_pos_order_id: orderId,
+    p_discount_amount: Number(discount) || 0,
+    p_amount_received: Number(amountReceived) || 0,
+  });
+  if (error) throw error;
+  return data;
+}
+
+/** Single API call at checkout — cart lives in browser until then. */
+export async function completeSaleFromCart(lines, { discount = 0, amountReceived = 0 }) {
+  const sb = requireSupabase();
+  const { data, error } = await sb.rpc("complete_sale_from_cart", {
+    p_items: lines,
     p_discount_amount: Number(discount) || 0,
     p_amount_received: Number(amountReceived) || 0,
   });

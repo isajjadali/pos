@@ -99,6 +99,70 @@ export async function importRow(mapped, behavior) {
   return { action: "created", productId: id };
 }
 
+const BULK_CHUNK_SIZE = 200;
+
+function importJsonNumber(value) {
+  const s = String(value ?? "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Import many rows in few RPC calls (server-side loop, one HTTP request per chunk).
+ */
+export async function importProductsBulk(mappedRows, behavior, { onProgress } = {}) {
+  const sb = requireSupabase();
+  const allResults = [];
+  let totalSuccess = 0;
+  let totalFailed = 0;
+
+  for (let offset = 0; offset < mappedRows.length; offset += BULK_CHUNK_SIZE) {
+    const chunk = mappedRows.slice(offset, offset + BULK_CHUNK_SIZE);
+    const payload = chunk.map((row) => ({
+      name: row.name ?? "",
+      external_product_id: row.external_product_id ?? "",
+      sku: row.sku ?? "",
+      barcode: row.barcode ?? "",
+      vendor: row.vendor ?? "",
+      category: row.category ?? "",
+      quantity: importJsonNumber(row.quantity),
+      selling_price: importJsonNumber(row.selling_price),
+      purchase_price: importJsonNumber(row.purchase_price),
+    }));
+
+    const { data, error } = await sb.rpc("import_products_bulk", {
+      p_rows: payload,
+      p_duplicate_behavior: behavior,
+    });
+    if (error) throw error;
+
+    const results = data?.results ?? [];
+    const summary = data?.summary ?? {};
+    for (const r of results) {
+      const status =
+        r.action === "error" ? `error: ${r.error}` : r.action;
+      allResults.push({ name: r.name, status, rowIndex: r.row_index });
+    }
+    totalSuccess += summary.success ?? 0;
+    totalFailed += summary.failed ?? 0;
+
+    if (onProgress) {
+      onProgress({
+        done: Math.min(offset + chunk.length, mappedRows.length),
+        total: mappedRows.length,
+      });
+    }
+  }
+
+  return {
+    results: allResults,
+    success: totalSuccess,
+    failed: totalFailed,
+    total: mappedRows.length,
+  };
+}
+
 export async function recordImportJob({ filename, total, success, failed }) {
   const sb = requireSupabase();
   const { data, error } = await sb
