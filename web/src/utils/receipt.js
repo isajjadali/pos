@@ -30,7 +30,7 @@ export const SAMPLE_RECEIPT_ITEMS = [
 
 export function normalizeReceiptSettings(raw = {}) {
   return {
-    store_name: raw.store_name?.trim() || "Dollar World by WABz",
+    store_name: raw.store_name?.trim() || "Discount World by WABz",
     receipt_header: raw.receipt_header?.trim() || "",
     receipt_footer: raw.receipt_footer?.trim() || "",
     currency_code: raw.currency_code || "PKR",

@@ -313,7 +313,7 @@ onMounted(load);
   color: #0f766e;
 }
 .panel-icon.warn {
-  color: #d97706;
+  color: #111827;
 }
 .panel-list {
   list-style: none;

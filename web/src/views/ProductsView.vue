@@ -169,7 +169,7 @@ function stockTagProps(row) {
       bordered: true,
       round: true,
       size: "small",
-      color: { color: "#fef2f2", textColor: "#b91c1c", borderColor: "#f87171" },
+      color: { color: "#fef2f2", textColor: "#111827", borderColor: "#f87171" },
     };
   }
   if (row.is_low_stock || qty <= threshold) {
@@ -177,14 +177,14 @@ function stockTagProps(row) {
       bordered: true,
       round: true,
       size: "small",
-      color: { color: "#fffbeb", textColor: "#b45309", borderColor: "#fbbf24" },
+      color: { color: "#fde68a", textColor: "#111827", borderColor: "#b45309" },
     };
   }
   return {
     bordered: true,
     round: true,
     size: "small",
-    color: { color: "#ecfdf5", textColor: "#047857", borderColor: "#34d399" },
+    color: { color: "#ecfdf5", textColor: "#111827", borderColor: "#34d399" },
   };
 }
 

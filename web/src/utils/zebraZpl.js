@@ -48,7 +48,7 @@ function barcodeWidthDots(charLen, moduleW) {
 }
 
 /** Printed above product name on every barcode label */
-export const LABEL_STORE_TITLE = "Dollar World by WABz";
+export const LABEL_STORE_TITLE = "Discount World by WABz";
 
 /**
  * Shared layout math for ZPL print and on-screen preview (203 dpi).

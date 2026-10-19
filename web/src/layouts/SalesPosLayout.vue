@@ -19,7 +19,7 @@ async function logout() {
   <div class="sales-shell">
     <header class="sales-topbar">
       <div class="sales-brand">
-        <strong>Dollar World</strong>
+        <strong>Discount World</strong>
         <NText depth="3" style="font-size: 12px">by WABz · New sale</NText>
       </div>
       <NButton v-if="supabaseConfigured" type="primary" ghost @click="logout">Sign out</NButton>

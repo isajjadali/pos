@@ -11,7 +11,7 @@ export async function updateSettings(payload) {
   const sb = requireSupabase();
   const current = await getSettings();
   const row = {
-    store_name: payload.store_name?.trim() || "Dollar World by WABz",
+    store_name: payload.store_name?.trim() || "Discount World by WABz",
     currency_code: "PKR",
     default_low_stock_threshold: Math.max(0, Math.floor(Number(payload.default_low_stock_threshold) || 5)),
     receipt_header: payload.receipt_header?.trim() || null,

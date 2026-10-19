@@ -1,4 +1,4 @@
-# Dollar World by WABz — Implementation status
+# Discount World by WABz — Implementation status
 
 ## Stack
 

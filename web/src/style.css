@@ -4,6 +4,14 @@
   color: #111827;
   background: #f3f4f6;
   --app-primary: #0f766e;
+  /* Darker amber / warning (stock low, tags, promo banner) */
+  --app-warning-bg: #fde68a;
+  --app-warning-bg-soft: #fef3c7;
+  --app-warning-border: #b45309;
+  --app-warning-text: #111827;
+  --app-warning-text-strong: #000000;
+  --app-warning-accent: #111827;
+  --app-on-light-surface-text: #111827;
 }
 
 * {
@@ -29,4 +37,11 @@ h1 {
 .n-data-table-th--selection .n-checkbox-box,
 .n-data-table-td--selection .n-checkbox-box {
   background-color: #fff;
+}
+
+/* Light-surface chips / alerts — always black text */
+.n-tag--warning-type .n-tag__content,
+.n-alert--warning-type .n-alert-body__title,
+.n-alert--warning-type .n-alert-body__content {
+  color: #111827 !important;
 }

@@ -1024,7 +1024,7 @@ onUnmounted(() => {
   border-style: dashed;
 }
 .pos-tab-chip--hold:not(.pos-tab-chip--active) .pos-tab-label {
-  color: #b45309;
+  color: var(--app-warning-accent);
 }
 .pos-tab-new {
   flex-shrink: 0;
@@ -1092,7 +1092,7 @@ onUnmounted(() => {
   background: #f9fafb;
 }
 .pos-pick-item--disabled .pick-meta {
-  color: #b45309;
+  color: var(--app-warning-accent);
 }
 .pos-avail-ok {
   font-weight: 700;
@@ -1135,13 +1135,13 @@ onUnmounted(() => {
   gap: 12px;
   padding: 8px 12px;
   border-radius: 8px;
-  background: #fde68a;
-  border: 1px solid #d97706;
+  background: var(--app-warning-bg);
+  border: 1px solid var(--app-warning-border);
   font-size: 13px;
-  color: #78350f;
+  color: var(--app-warning-text);
 }
 .pos-scheduled-promo strong {
-  color: #451a03;
+  color: var(--app-warning-text-strong);
 }
 .pos-scheduled-promo-remove {
   font-weight: 700 !important;

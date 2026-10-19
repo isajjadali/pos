@@ -44,7 +44,7 @@ function enterDemo() {
       <aside class="login-hero" aria-hidden="true">
         <div class="hero-inner">
           <p class="hero-eyebrow">Retail POS</p>
-          <h2 class="hero-title">Dollar World<br />by WABz</h2>
+          <h2 class="hero-title">Discount World<br />by WABz</h2>
           <p class="hero-tagline">
             Fast checkout, live stock, and labels — built for your shop floor.
           </p>

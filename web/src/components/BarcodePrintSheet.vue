@@ -40,7 +40,7 @@ onMounted(() => {
       class="label"
       :style="{ width: `${widthMm}mm`, minHeight: `${heightMm}mm` }"
     >
-      <div class="store">Dollar World by WABz</div>
+      <div class="store">Discount World by WABz</div>
       <div class="name">{{ label.name }}</div>
       <svg :id="`bc-${index}`" class="barcode"></svg>
       <div class="meta">{{ label.barcode }}</div>

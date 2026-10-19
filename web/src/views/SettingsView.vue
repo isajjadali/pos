@@ -27,7 +27,7 @@ const message = useMessage();
 const layout = useLayoutStore();
 const route = useRoute();
 const form = ref({
-  store_name: "Dollar World by WABz",
+  store_name: "Discount World by WABz",
   default_low_stock_threshold: 5,
   receipt_header: "",
   receipt_footer: "Thank you — visit again!",

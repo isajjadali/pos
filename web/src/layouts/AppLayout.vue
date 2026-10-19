@@ -91,7 +91,7 @@ async function logout() {
     >
       <div class="brand" :class="{ 'brand--collapsed': siderCollapsed }">
         <span class="brand-mark">DW</span>
-        <strong class="brand-title">Dollar World</strong>
+        <strong class="brand-title">Discount World</strong>
         <NText class="brand-sub" depth="2" style="font-size: 12px">by WABz</NText>
       </div>
       <NMenu

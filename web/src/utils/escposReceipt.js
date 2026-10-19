@@ -122,7 +122,7 @@ export function buildEscPosReceipt(sale, items, settingsInput, { paperMm = 80 } 
 
   blank(EDGE_LINES);
 
-  // Title: split "Dollar World by WABz" → big brand + subtitle (less cramped)
+  // Title: split "Discount World by WABz" → big brand + subtitle (less cramped)
   const rawName = String(vm.storeName || "").trim();
   const byMatch = rawName.match(/^(.*?)\s+by\s+(.+)$/i);
   const titleMain = (byMatch ? byMatch[1] : rawName).toUpperCase();
