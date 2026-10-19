@@ -140,13 +140,9 @@ async function runImport() {
 
     <div v-else-if="step === 2">
       <p>Map each file column to a system field.</p>
-      <div v-for="col in headers" :key="col" style="margin-bottom: 8px">
+      <div v-for="col in headers" :key="col" class="import-map-row">
         <strong>{{ col }}</strong>
-        <NSelect
-          v-model:value="mapping[col]"
-          :options="IMPORT_FIELD_OPTIONS"
-          style="width: 280px; margin-left: 12px"
-        />
+        <NSelect v-model:value="mapping[col]" :options="IMPORT_FIELD_OPTIONS" class="import-map-select" />
       </div>
       <NButton type="primary" style="margin-top: 16px" @click="step = 3">Continue</NButton>
     </div>
@@ -179,3 +175,27 @@ async function runImport() {
     </div>
   </div>
 </template>
+
+<style scoped>
+.import-map-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+.import-map-select {
+  width: 280px;
+  margin-left: 12px;
+}
+@media (max-width: 768px) {
+  .import-map-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .import-map-select {
+    width: 100% !important;
+    margin-left: 0 !important;
+  }
+}
+</style>

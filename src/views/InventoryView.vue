@@ -95,13 +95,15 @@ onMounted(load);
   <div>
     <h1 style="margin-top: 0">Inventory</h1>
     <SupabaseRequiredAlert />
-    <NSpace style="margin-bottom: 16px">
+    <NSpace class="app-filter-stack" style="margin-bottom: 16px" wrap>
       <NButton type="primary" :disabled="!supabaseConfigured" @click="showReceive = true">Receive stock</NButton>
       <NButton :disabled="!supabaseConfigured" @click="showAdjust = true">Adjustment / damage</NButton>
       <NButton @click="load">Refresh</NButton>
     </NSpace>
     <p v-if="lowStock.length"><strong>Low stock:</strong> {{ lowStock.map((p) => p.name).join(", ") }}</p>
-    <NDataTable :loading="loading" :columns="columns" :data="movements" />
+    <div class="app-table-scroll">
+      <NDataTable :loading="loading" :columns="columns" :data="movements" :scroll-x="880" />
+    </div>
     <NModal v-model:show="showReceive" preset="card" title="Receive stock" style="width: min(640px, 96vw)">
       <NForm label-placement="top" class="inv-form-grid">
         <NFormItem label="Product" class="span-2"><NSelect v-model:value="receiveForm.productId" :options="productOptions" filterable /></NFormItem>
@@ -112,7 +114,7 @@ onMounted(load);
       </NForm>
       <template #footer><NButton type="primary" @click="submitReceive">Confirm receipt</NButton></template>
     </NModal>
-    <NModal v-model:show="showAdjust" preset="card" title="Stock adjustment" style="width: 480px">
+    <NModal v-model:show="showAdjust" preset="card" title="Stock adjustment" style="width: min(480px, 96vw)">
       <NForm>
         <NFormItem label="Product"><NSelect v-model:value="adjustForm.productId" :options="productOptions" filterable /></NFormItem>
         <NFormItem label="Quantity change (negative = remove)"><NInputNumber v-model:value="adjustForm.quantityChange" style="width: 100%" /></NFormItem>

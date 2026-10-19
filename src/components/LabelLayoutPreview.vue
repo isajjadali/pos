@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch, nextTick } from "vue";
+import { computed, ref, watch, nextTick, onMounted, onUnmounted } from "vue";
 import JsBarcode from "jsbarcode";
 import { computeRetailLabelLayout, dotsToMm } from "../utils/zebraZpl.js";
 
@@ -23,18 +23,46 @@ const layout = computed(() =>
   computeRetailLabelLayout(label.value, props.widthMm, props.heightMm)
 );
 
+const MM_TO_PX = 96 / 25.4;
+const wrapRef = ref(null);
+const containerWidth = ref(320);
+
+let resizeObserver;
+
+onMounted(() => {
+  const el = wrapRef.value;
+  if (!el || typeof ResizeObserver === "undefined") return;
+  resizeObserver = new ResizeObserver((entries) => {
+    const w = entries[0]?.contentRect.width;
+    if (w && w > 0) containerWidth.value = w;
+  });
+  resizeObserver.observe(el);
+});
+
+onUnmounted(() => {
+  resizeObserver?.disconnect();
+});
+
 /** Fit preview in pane while keeping true mm proportions */
 const previewScale = computed(() => {
   const w = Math.max(20, Number(props.widthMm) || 40);
   const h = Math.max(15, Number(props.heightMm) || 25);
-  return Math.min(3.2, 280 / w, 220 / h);
+  const availW = Math.max(120, containerWidth.value - 16);
+  const scaleByW = availW / (w * MM_TO_PX);
+  const scaleByH = 240 / (h * MM_TO_PX);
+  return Math.min(3.2, scaleByW, scaleByH);
 });
+
+const scaledSizePx = computed(() => ({
+  w: props.widthMm * MM_TO_PX * previewScale.value,
+  h: props.heightMm * MM_TO_PX * previewScale.value,
+}));
 
 const surfaceStyle = computed(() => ({
   width: `${props.widthMm}mm`,
   height: `${props.heightMm}mm`,
   transform: `scale(${previewScale.value})`,
-  transformOrigin: "top center",
+  transformOrigin: "top left",
 }));
 
 function mmFromDots(d) {
@@ -58,7 +86,10 @@ const titleStyle = computed(() => ({
   left: pctX(layout.value.sideM ?? 0),
   width: pctW(layout.value.innerW ?? 0),
   fontSize: mmFromDots(layout.value.titleFont ?? 18),
-  lineHeight: 1.05,
+  lineHeight: layout.value.titleLineGap
+    ? 1 + layout.value.titleLineGap / layout.value.titleFont
+    : 1.05,
+  maxHeight: mmFromDots(layout.value.titleH ?? layout.value.titleFont ?? 18),
 }));
 
 const nameStyle = computed(() => ({
@@ -121,11 +152,16 @@ watch(
 </script>
 
 <template>
-  <div class="wrap">
-    <div class="scale-box" :style="{ height: `${heightMm * previewScale * 3.78 + 8}px` }">
+  <div ref="wrapRef" class="wrap">
+    <div
+      class="scale-box"
+      :style="{ width: `${scaledSizePx.w}px`, height: `${scaledSizePx.h}px` }"
+    >
       <div class="label-surface" :style="surfaceStyle">
         <template v-if="layout.hasBarcode">
-          <div class="el title" :style="titleStyle">{{ layout.title }}</div>
+          <div class="el title" :style="titleStyle">
+            <div v-for="(line, i) in layout.titleLineTexts" :key="i">{{ line }}</div>
+          </div>
           <div class="el name" :style="nameStyle">
             <div v-for="(line, i) in layout.nameLineTexts" :key="i">{{ line }}</div>
           </div>
@@ -152,12 +188,15 @@ watch(
   flex-direction: column;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .scale-box {
-  display: flex;
-  justify-content: center;
-  width: 100%;
-  overflow: visible;
+  position: relative;
+  flex-shrink: 0;
+  margin: 0 auto;
+  overflow: hidden;
 }
 .label-surface {
   position: relative;
@@ -212,7 +251,9 @@ watch(
   font-size: 11px;
   color: #6b7280;
   text-align: center;
-  max-width: 320px;
+  max-width: 100%;
   line-height: 1.4;
+  padding: 0 4px;
+  box-sizing: border-box;
 }
 </style>

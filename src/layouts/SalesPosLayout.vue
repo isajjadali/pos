@@ -5,8 +5,10 @@ import { useAuthStore } from "../stores/auth.js";
 import { supabaseConfigured } from "../lib/supabase.js";
 import GlobalBarcodeScanner from "../components/GlobalBarcodeScanner.vue";
 import AppHotkeys from "../components/AppHotkeys.vue";
+import { useMobileShell } from "../composables/useMobileShell.js";
 
 const router = useRouter();
+useMobileShell();
 const auth = useAuthStore();
 
 async function logout() {
@@ -24,7 +26,7 @@ async function logout() {
       </div>
       <NButton v-if="supabaseConfigured" type="primary" ghost @click="logout">Sign out</NButton>
     </header>
-    <main class="sales-main">
+    <main class="sales-main app-page">
       <RouterView />
       <GlobalBarcodeScanner />
       <AppHotkeys />
@@ -65,5 +67,16 @@ async function logout() {
   width: 100%;
   margin: 0 auto;
   box-sizing: border-box;
+}
+@media (max-width: 768px) {
+  .sales-topbar {
+    padding: 10px 12px;
+  }
+  .sales-brand strong {
+    font-size: 1rem;
+  }
+  .sales-main {
+    padding: 12px 12px 24px;
+  }
 }
 </style>

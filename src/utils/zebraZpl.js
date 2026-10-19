@@ -90,10 +90,25 @@ export function computeRetailLabelLayout(label, widthMm, heightMm, dpi = LABEL_D
   }
   nameLines = Math.min(maxNameLines, Math.max(1, needed));
 
-  const titleFont = clamp(nameFont + 1, 15, 22);
+  let titleFont = clamp(nameFont + 1, 15, 22);
+  const titleMaxLines = widthMm < 44 ? 2 : 1;
+
+  function resolveTitleLayout(font = titleFont) {
+    let tf = font;
+    let lineGap = Math.max(0, Math.round(tf * 0.08));
+    let lineCount = estimateWrappedLines(LABEL_STORE_TITLE, innerW, tf);
+    while (lineCount > titleMaxLines && tf > 10) {
+      tf -= 1;
+      lineGap = Math.max(0, Math.round(tf * 0.08));
+      lineCount = estimateWrappedLines(LABEL_STORE_TITLE, innerW, tf);
+    }
+    const texts = wrapLabelLines(LABEL_STORE_TITLE, innerW, tf, titleMaxLines);
+    const h = tf * texts.length + Math.max(0, texts.length - 1) * lineGap;
+    return { font: tf, lineGap, texts, h };
+  }
+
   const priceFont = clamp(Math.round(ll * 0.14), 14, 22);
   const idFont = clamp(nameFont - 1, 13, 20);
-  const titleH = titleFont;
   const idH = idFont;
   const idGap = Math.max(1, dots(0.2, dpi));
   let barH = clamp(Math.round(ll * 0.26), 24, 50);
@@ -105,7 +120,7 @@ export function computeRetailLabelLayout(label, widthMm, heightMm, dpi = LABEL_D
 
   function totalBlockHeight() {
     return (
-      titleH +
+      resolveTitleLayout().h +
       titleGap +
       nameBlockHeight() +
       gap +
@@ -125,11 +140,18 @@ export function computeRetailLabelLayout(label, widthMm, heightMm, dpi = LABEL_D
   }
   while (blockH > maxBlock && nameFont > 12) {
     nameFont -= 1;
+    titleFont = clamp(nameFont + 1, 15, 22);
     nameLines = Math.min(maxNameLines, estimateWrappedLines(label.name, innerW, nameFont));
     blockH = totalBlockHeight();
   }
   const nameLineGap = Math.max(0, Math.round(nameFont * 0.08));
   const nameHFinal = nameBlockHeight();
+
+  const titleLayout = resolveTitleLayout();
+  titleFont = titleLayout.font;
+  const titleLineGap = titleLayout.lineGap;
+  const titleLineTexts = titleLayout.texts;
+  const titleH = titleLayout.h;
 
   let startY = Math.round((ll - blockH) / 2);
   startY = Math.max(dots(0.35, dpi), startY);
@@ -156,6 +178,8 @@ export function computeRetailLabelLayout(label, widthMm, heightMm, dpi = LABEL_D
     sideM,
     innerW,
     title: LABEL_STORE_TITLE,
+    titleLineTexts,
+    titleLineGap,
     name: String(label.name ?? ""),
     nameLineTexts,
     priceText,
@@ -216,7 +240,7 @@ function buildRetailLabelZpl(label, widthMm, heightMm, dpi) {
 ^PW${pw}
 ^LL${ll}
 ^LH0,0
-^FO${sideM},${titleY}^A0N,${titleFont},${titleFont}^FB${innerW},1,0,C,0^FD${title}^FS
+^FO${sideM},${titleY}^A0N,${titleFont},${titleFont}^FB${innerW},${layout.titleLineTexts.length},${layout.titleLineGap},C,0^FD${title}^FS
 ^FO${sideM},${nameY}^A0N,${nameFont},${nameFont}^FB${innerW},${nameLines},${nameLineGap},C,0^FD${name}^FS
 ^FO${barX},${barY}^BY${moduleW},2,${barH}^BCN,${barH},N,N,N^FD${code}^FS
 ^FO${sideM},${hriY}^A0N,${idFont},${idFont}^FB${innerW},1,0,C,0^FD${code}^FS

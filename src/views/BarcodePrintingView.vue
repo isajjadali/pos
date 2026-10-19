@@ -410,7 +410,7 @@ onMounted(() => {
       :min="1"
       style="width: 120px; margin-bottom: 12px"
     />
-    <NSpace style="margin-bottom: 12px" align="center" wrap>
+    <NSpace class="app-filter-stack" style="margin-bottom: 12px" align="center" wrap>
       <NInput
         v-model:value="search"
         placeholder="Search"
@@ -469,16 +469,19 @@ onMounted(() => {
         Pending: {{ pendingCount }} · Done: {{ noPendingCount }}
       </span>
     </NSpace>
-    <NDataTable
-      v-model:checked-row-keys="selected"
-      :row-key="(r) => r.id"
-      :loading="loading"
-      :columns="columns"
-      :data="pagedRows"
-      :remote="true"
-      @update:sorter="onTableSorterUpdate"
-      :pagination="pagination"
-    />
+    <div class="app-table-scroll">
+      <NDataTable
+        v-model:checked-row-keys="selected"
+        :row-key="(r) => r.id"
+        :loading="loading"
+        :columns="columns"
+        :data="pagedRows"
+        :scroll-x="1100"
+        :remote="true"
+        @update:sorter="onTableSorterUpdate"
+        :pagination="pagination"
+      />
+    </div>
     <h3>Recent print jobs</h3>
     <pre style="font-size: 12px">{{ jobs.length }} jobs loaded</pre>
   </div>

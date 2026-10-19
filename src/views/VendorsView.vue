@@ -314,7 +314,7 @@ onMounted(load);
       {{ summary.withoutProducts }} vendor(s) have no products — use filter
       <strong>No products (safe to delete)</strong> to clean up unused vendors.
     </NAlert>
-    <NSpace style="margin-bottom: 16px" wrap>
+    <NSpace class="app-filter-stack" style="margin-bottom: 16px" wrap>
       <NInput v-model:value="search" placeholder="Search vendor name" clearable style="width: 260px" />
       <NSelect
         v-model:value="productFilter"
@@ -342,6 +342,7 @@ onMounted(load);
       :loading="loading"
       :columns="columns"
       :data="rows"
+      :scroll-x="720"
       :remote="true"
       @update:sorter="onTableSorterUpdate"
       :pagination="{

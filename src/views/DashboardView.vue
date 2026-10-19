@@ -357,6 +357,21 @@ onMounted(load);
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+@media (max-width: 768px) {
+  .dash-hero {
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .dash-hero-title {
+    font-size: 1.35rem;
+  }
+  .dash-hero-actions {
+    width: 100%;
+  }
+  .dash-hero-actions :deep(.n-space) {
+    flex-wrap: wrap;
+  }
+}
 @media (max-width: 560px) {
   .metrics {
     grid-template-columns: 1fr;

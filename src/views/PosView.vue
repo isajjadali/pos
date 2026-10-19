@@ -778,7 +778,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div>
+  <div class="pos-page">
     <h1 style="margin-top: 0">POS / New Sale</h1>
     <p class="pos-hint">
       <kbd>F7</kbd> hold tab (park sale locally; qty stays reserved in other tabs) ·
@@ -1209,5 +1209,44 @@ onUnmounted(() => {
 .pick-meta {
   font-size: 12px;
   opacity: 0.85;
+}
+@media (max-width: 768px) {
+  .pos-hint,
+  .pos-tab-shortcut-hint {
+    display: none;
+  }
+  .pos-cart-filter {
+    max-width: none;
+  }
+  .pos-scheduled-promo {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .pos-checkout {
+    align-items: stretch;
+  }
+  .pos-totals {
+    width: 100%;
+  }
+  .pos-num-input {
+    width: min(160px, 42vw);
+  }
+  .pos-actions {
+    justify-content: stretch !important;
+  }
+  .pos-actions :deep(.n-space) {
+    display: flex;
+    flex-wrap: wrap;
+    width: 100%;
+    gap: 8px;
+  }
+  .pos-actions :deep(.n-button) {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+  }
+  .pos-table :deep(.n-data-table-table) {
+    min-width: 480px;
+  }
 }
 </style>

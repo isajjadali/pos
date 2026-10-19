@@ -226,7 +226,16 @@ onMounted(load);
         Add scheduled discount
       </NButton>
     </NSpace>
-    <NDataTable :columns="columns" :data="rows" :loading="loading" size="small" :bordered="false" />
+    <div class="app-table-scroll">
+      <NDataTable
+        :columns="columns"
+        :data="rows"
+        :loading="loading"
+        size="small"
+        :bordered="false"
+        :scroll-x="640"
+      />
+    </div>
 
     <NModal
       v-model:show="modalOpen"

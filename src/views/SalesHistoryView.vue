@@ -195,6 +195,7 @@ onMounted(load);
       :loading="loading"
       :columns="columns"
       :data="rows"
+      :scroll-x="900"
       :remote="true"
       :pagination="{
         page,

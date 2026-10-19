@@ -602,7 +602,7 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
       Catalog view — sale prices only. Use POS to place orders.
     </NText>
     <SupabaseRequiredAlert />
-    <NSpace style="margin-bottom: 16px" wrap>
+    <NSpace class="app-filter-stack" style="margin-bottom: 16px" wrap>
       <NInput
         ref="searchInputRef"
         v-model:value="search"

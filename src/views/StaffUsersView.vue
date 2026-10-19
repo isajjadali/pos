@@ -238,13 +238,21 @@ onMounted(load);
       cannot be deleted until their role is changed to Sales. Listing and role edits use database
       RPCs.
     </NAlert>
-    <NSpace style="margin-bottom: 16px">
+    <NSpace class="app-filter-stack" style="margin-bottom: 16px" wrap>
       <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
         Add staff user
       </NButton>
       <NButton :disabled="!supabaseConfigured" @click="load">Refresh</NButton>
     </NSpace>
-    <NDataTable :loading="loading" :columns="columns" :data="rows" :row-key="(r) => r.id" />
+    <div class="app-table-scroll">
+      <NDataTable
+        :loading="loading"
+        :columns="columns"
+        :data="rows"
+        :row-key="(r) => r.id"
+        :scroll-x="780"
+      />
+    </div>
   </div>
 
   <NModal v-model:show="showCreate" preset="card" title="New staff account" style="width: min(560px, 96vw)">
@@ -344,5 +352,13 @@ onMounted(load);
 }
 .span-2 {
   grid-column: span 2;
+}
+@media (max-width: 768px) {
+  .staff-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .span-2 {
+    grid-column: span 1;
+  }
 }
 </style>

@@ -45,3 +45,72 @@ h1 {
 .n-alert--warning-type .n-alert-body__content {
   color: #111827 !important;
 }
+
+/* ——— Mobile (all app pages except login) ——— */
+@media (max-width: 768px) {
+  h1 {
+    font-size: 1.25rem;
+  }
+
+  .app-page {
+    max-width: 100%;
+  }
+
+  .app-table-scroll {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .app-filter-stack {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    width: 100%;
+    gap: 10px !important;
+  }
+
+  .app-filter-stack > * {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+  }
+
+  .app-filter-stack .n-input,
+  .app-filter-stack .n-select,
+  .app-filter-stack .n-input-number,
+  .app-filter-stack .n-input-group {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  .app-filter-stack .n-switch {
+    align-self: flex-start;
+  }
+
+  .app-page .n-data-table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: 0 -2px;
+  }
+
+  .app-page .n-data-table-table {
+    min-width: 520px;
+  }
+
+  .app-page .n-pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    row-gap: 8px;
+  }
+
+  .app-page .n-card {
+    border-radius: 10px;
+  }
+
+  .app-page .n-modal .n-card {
+    max-width: calc(100vw - 24px) !important;
+    margin: 12px;
+  }
+}

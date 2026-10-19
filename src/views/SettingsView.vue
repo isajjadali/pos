@@ -107,7 +107,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div>
+  <div class="settings-page">
     <h1 style="margin-top: 0">Settings</h1>
     <SupabaseRequiredAlert />
 
@@ -214,7 +214,7 @@ onMounted(load);
               <NSwitch v-model:value="form.receipt_show_change" />
             </NFormItem>
           </NForm>
-          <NSpace>
+          <NSpace class="settings-actions" wrap>
             <NButton type="primary" :loading="saving" :disabled="!supabaseConfigured" @click="save">
               Save settings
             </NButton>
@@ -232,6 +232,17 @@ onMounted(load);
 </template>
 
 <style scoped>
+.settings-page {
+  width: 100%;
+  max-width: 100%;
+}
+
+.settings-page :deep(.n-card) {
+  width: 100%;
+  max-width: 100%;
+  margin-bottom: 20px;
+}
+
 .settings-top-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -282,11 +293,7 @@ onMounted(load);
   text-align: center;
 }
 
-@media (max-width: 768px) {
-  .settings-top-row {
-    grid-template-columns: 1fr;
-  }
-
+@media (max-width: 900px) {
   .receipt-split {
     grid-template-columns: 1fr;
   }
@@ -295,9 +302,38 @@ onMounted(load);
     padding-right: 0;
     border-bottom: 1px solid #e5e7eb;
     padding-bottom: 20px;
+    margin-bottom: 8px;
   }
   .receipt-preview-pane {
     position: static;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .label-preview-pane {
+    align-items: stretch;
+    overflow-x: hidden;
+  }
+}
+
+@media (max-width: 768px) {
+  .settings-top-row {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .settings-full-section {
+    margin-bottom: 12px;
+  }
+
+  .settings-actions {
+    width: 100%;
+  }
+
+  .settings-actions :deep(.n-button) {
+    flex: 1 1 auto;
+    min-width: 0;
   }
 }
 </style>
