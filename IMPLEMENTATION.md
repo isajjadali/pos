@@ -2,7 +2,7 @@
 
 ## Stack
 
-- **Frontend:** `web/` — Vue 3, Vite, JavaScript, Naive UI, Pinia, Vue Router
+- **Frontend:** repo root — Vue 3, Vite, JavaScript, Naive UI, Pinia, Vue Router
 - **Backend:** Supabase (PostgreSQL, Auth, RLS)
 ## Database setup (pick one)
 
@@ -44,7 +44,7 @@ In Dashboard → **SQL Editor**, run each file in order:
 | 4 Barcode printing | Done (browser print + reconcile) |
 | 5 POS + held orders | Done |
 | 6 Dashboard + sales history | Done |
-| 7 Deploy | `web/vercel.json` ready — set env vars on Vercel |
+| 7 Deploy | `vercel.json` ready — set env vars on Vercel |
 
 **Not in MVP:** image/AI receipt import (explicitly deferred).
 

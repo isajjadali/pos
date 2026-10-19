@@ -1,4 +1,4 @@
--- Same vendor-initials prefix as web/src/utils/titleCase.js (vendorInitialsPrefix)
+-- Same vendor-initials prefix as src/utils/titleCase.js (vendorInitialsPrefix)
 
 create or replace function public.vendor_initials_prefix(p_vendor_name text)
 returns text
