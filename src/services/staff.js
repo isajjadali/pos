@@ -1,4 +1,5 @@
 import { requireSupabase } from "../lib/supabase.js";
+import { invokeEdgeFunction } from "../utils/edgeFunction.js";
 
 export async function listStaffUsers() {
   const sb = requireSupabase();
@@ -19,12 +20,15 @@ export async function updateStaffUser(userId, { full_name, role }) {
 
 export async function createStaffUser({ email, password, full_name, role }) {
   const sb = requireSupabase();
-  const { data, error } = await sb.functions.invoke("create-staff-user", {
-    body: { email, password, full_name, role },
-  });
-  if (error) throw error;
-  if (data?.error) {
-    throw new Error(data.error);
-  }
-  return data;
+  return invokeEdgeFunction(sb, "create-staff-user", { email, password, full_name, role });
+}
+
+export async function updateStaffPassword(userId, password) {
+  const sb = requireSupabase();
+  return invokeEdgeFunction(sb, "update-staff-password", { user_id: userId, password });
+}
+
+export async function deleteStaffUser(userId) {
+  const sb = requireSupabase();
+  return invokeEdgeFunction(sb, "delete-staff-user", { user_id: userId });
 }

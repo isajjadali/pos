@@ -13,30 +13,17 @@ Deno.serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
-    if (!supabaseUrl || !serviceKey || !anonKey) {
+    if (!supabaseUrl || !serviceKey) {
       return new Response(JSON.stringify({ error: "Server misconfigured" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return new Response(JSON.stringify({ error: "Not authenticated" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const caller = createClient(supabaseUrl, anonKey, {
-      global: { headers: { Authorization: authHeader } },
-    });
-    const {
-      data: { user: callerUser },
-      error: userErr,
-    } = await caller.auth.getUser();
-    if (userErr || !callerUser) {
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+    if (!jwt || (anonKey && jwt === anonKey)) {
       return new Response(JSON.stringify({ error: "Not authenticated" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -44,6 +31,17 @@ Deno.serve(async (req) => {
     }
 
     const adminDb = createClient(supabaseUrl, serviceKey);
+    const {
+      data: { user: callerUser },
+      error: userErr,
+    } = await adminDb.auth.getUser(jwt);
+    if (userErr || !callerUser) {
+      const msg = userErr?.message || "Not authenticated";
+      return new Response(JSON.stringify({ error: msg }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
     const { data: callerProfile } = await adminDb
       .from("profiles")
       .select("role")

@@ -13,15 +13,23 @@ import {
   NAlert,
   NText,
   useMessage,
+  useDialog,
 } from "naive-ui";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { useAuthStore } from "../stores/auth.js";
-import { listStaffUsers, updateStaffUser, createStaffUser } from "../services/staff.js";
+import {
+  listStaffUsers,
+  updateStaffUser,
+  createStaffUser,
+  updateStaffPassword,
+  deleteStaffUser,
+} from "../services/staff.js";
 import { rowNumberColumn } from "../utils/tableColumns.js";
 import { toTitleCase } from "../utils/titleCase.js";
 
 const message = useMessage();
+const dialog = useDialog();
 const auth = useAuthStore();
 
 const loading = ref(false);
@@ -44,7 +52,7 @@ function emptyCreateForm() {
 }
 
 function emptyEditForm() {
-  return { full_name: "", role: "sales" };
+  return { full_name: "", role: "sales", new_password: "", confirm_password: "" };
 }
 
 const editForm = ref(emptyEditForm());
@@ -67,13 +75,22 @@ const columns = [
   {
     title: "",
     key: "actions",
-    width: 90,
+    width: 168,
     render: (row) =>
-      h(
-        NButton,
-        { size: "small", onClick: () => openEdit(row) },
-        { default: () => "Edit" }
-      ),
+      h(NSpace, { size: "small" }, () => [
+        h(NButton, { size: "small", onClick: () => openEdit(row) }, { default: () => "Edit" }),
+        h(
+          NButton,
+          {
+            size: "small",
+            type: "error",
+            quaternary: true,
+            disabled: row.id === auth.user?.id || row.role === "admin",
+            onClick: () => confirmDeleteStaff(row),
+          },
+          { default: () => "Delete" }
+        ),
+      ]),
   },
 ];
 
@@ -101,6 +118,8 @@ function openEdit(row) {
   editForm.value = {
     full_name: row.full_name || "",
     role: row.role || "sales",
+    new_password: "",
+    confirm_password: "",
   };
   showEdit.value = true;
 }
@@ -116,9 +135,7 @@ async function saveCreate() {
   } catch (e) {
     const msg = e.message || "Create failed";
     if (msg.includes("Failed to send a request to the Edge Function")) {
-      message.error(
-        "Create user needs the create-staff-user Edge Function deployed (see supabase/functions)."
-      );
+      message.error(edgeFunctionHint("create-staff-user"));
     } else {
       message.error(msg);
     }
@@ -127,20 +144,77 @@ async function saveCreate() {
   }
 }
 
+function edgeFunctionHint(fnName) {
+  return `${fnName} Edge Function must be deployed (supabase functions deploy ${fnName}).`;
+}
+
+function confirmDeleteStaff(row) {
+  if (row.id === auth.user?.id) {
+    message.warning("You cannot delete your own account");
+    return;
+  }
+  if (row.role === "admin") {
+    message.warning("Change this user to Sales first, then you can delete them.");
+    return;
+  }
+  const label = row.full_name || row.email || "this user";
+  dialog.warning({
+    title: "Delete staff user?",
+    content: `Remove ${label}? They will not be able to sign in again.`,
+    positiveText: "Delete",
+    negativeText: "Cancel",
+    onPositiveClick: async () => {
+      try {
+        await deleteStaffUser(row.id);
+        message.success("Staff user deleted");
+        await load();
+      } catch (e) {
+        const msg = e.message || "Delete failed";
+        if (msg.includes("Failed to send a request to the Edge Function")) {
+          message.error(edgeFunctionHint("delete-staff-user"));
+        } else {
+          message.error(msg);
+        }
+      }
+    },
+  });
+}
+
 async function saveEdit() {
   if (!editing.value) return;
+  const pwd = String(editForm.value.new_password || "");
+  const confirm = String(editForm.value.confirm_password || "");
+  if (pwd || confirm) {
+    if (pwd.length < 6) {
+      message.warning("Password must be at least 6 characters");
+      return;
+    }
+    if (pwd !== confirm) {
+      message.warning("Passwords do not match");
+      return;
+    }
+  }
+
   saving.value = true;
   try {
     editForm.value.full_name = toTitleCase(editForm.value.full_name);
     await updateStaffUser(editing.value.id, editForm.value);
-    message.success("Staff updated");
+    if (pwd) {
+      await updateStaffPassword(editing.value.id, pwd);
+    }
+    message.success(pwd ? "Staff updated and password changed" : "Staff updated");
     showEdit.value = false;
     if (editing.value.id === auth.user?.id) {
       await auth.loadProfile();
     }
     await load();
   } catch (e) {
-    message.error(e.message || "Update failed");
+    const msg = e.message || "Update failed";
+    if (msg.includes("Failed to send a request to the Edge Function") && pwd) {
+      message.error(edgeFunctionHint("update-staff-password"));
+    } else {
+      message.error(msg);
+    }
   } finally {
     saving.value = false;
   }
@@ -158,9 +232,11 @@ onMounted(load);
     </NText>
     <SupabaseRequiredAlert />
     <NAlert type="info" style="margin-bottom: 16px" :bordered="false">
-      New users need the <strong>create-staff-user</strong> Edge Function on your Supabase project
-      (<code>supabase functions deploy create-staff-user</code>). Listing and role edits work via
-      database RPC after migrations are applied.
+      Creating accounts, resetting passwords, and deleting staff need Edge Functions:
+      <code>create-staff-user</code>, <code>update-staff-password</code>,
+      <code>delete-staff-user</code> (<code>supabase functions deploy …</code>). Administrators
+      cannot be deleted until their role is changed to Sales. Listing and role edits use database
+      RPCs.
     </NAlert>
     <NSpace style="margin-bottom: 16px">
       <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
@@ -200,12 +276,21 @@ onMounted(load);
     </template>
   </NModal>
 
-  <NModal v-model:show="showEdit" preset="card" title="Edit staff" style="width: 440px">
+  <NModal v-model:show="showEdit" preset="card" title="Edit staff" style="width: min(480px, 96vw)">
     <NText v-if="editing" depth="2" style="display: block; margin-bottom: 12px">
       {{ editing.email }}
     </NText>
     <NAlert v-if="isEditingSelf" type="warning" style="margin-bottom: 12px" :bordered="false">
-      You cannot remove your own admin role.
+      You cannot remove your own admin role or delete your own account.
+    </NAlert>
+    <NAlert
+      v-else-if="editing?.role === 'admin'"
+      type="info"
+      style="margin-bottom: 12px"
+      :bordered="false"
+    >
+      To remove this user, change role to <strong>Sales</strong> and save, then use Delete on the
+      staff list.
     </NAlert>
     <NForm label-placement="top">
       <NFormItem label="Full name">
@@ -216,6 +301,26 @@ onMounted(load);
           v-model:value="editForm.role"
           :options="roleOptions"
           :disabled="isEditingSelf && editForm.role === 'admin'"
+        />
+      </NFormItem>
+      <NText depth="3" style="display: block; margin: 8px 0 4px; font-size: 13px">
+        Set a new login password (optional). Leave blank to keep the current password.
+      </NText>
+      <NFormItem label="New password">
+        <NInput
+          v-model:value="editForm.new_password"
+          type="password"
+          show-password-on="click"
+          autocomplete="new-password"
+          placeholder="Min 6 characters"
+        />
+      </NFormItem>
+      <NFormItem label="Confirm new password">
+        <NInput
+          v-model:value="editForm.confirm_password"
+          type="password"
+          show-password-on="click"
+          autocomplete="new-password"
         />
       </NFormItem>
     </NForm>
