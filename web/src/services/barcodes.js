@@ -4,13 +4,16 @@ export async function listProductsForPrinting({ search = "" } = {}) {
   const sb = requireSupabase();
   let q = sb
     .from("products")
-    .select("id, name, barcode, sku, selling_price, current_stock, unprinted_barcode_qty")
+    .select(
+      "id, name, barcode, sku, external_product_id, selling_price, current_stock, unprinted_barcode_qty"
+    )
     .eq("is_active", true)
     .order("name");
   if (search.trim()) {
     q = q.or(`name.ilike.%${search.trim()}%,barcode.ilike.%${search.trim()}%`);
   }
-  const { data, error } = await q.limit(200);
+  // Client paginates / filters in the barcode print UI
+  const { data, error } = await q.limit(2000);
   if (error) throw error;
   return data ?? [];
 }

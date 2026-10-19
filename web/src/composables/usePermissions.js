@@ -15,6 +15,7 @@ export function usePermissions() {
   const canManageVendors = computed(() => auth.isAdmin);
   const canPrintBarcodes = computed(() => auth.isAdmin);
   const canViewSalesHistory = computed(() => auth.isAdmin);
+  const canDeleteSales = computed(() => auth.isAdmin);
   const canManageStaff = computed(() => auth.isAdmin);
   const canUsePos = computed(() => true);
 
@@ -31,6 +32,7 @@ export function usePermissions() {
     canManageVendors,
     canPrintBarcodes,
     canViewSalesHistory,
+    canDeleteSales,
     canManageStaff,
     canUsePos,
     defaultHomeRoute,

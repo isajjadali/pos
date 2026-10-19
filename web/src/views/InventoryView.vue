@@ -18,6 +18,7 @@ import { listStockMovements, receiveStock, adjustStock, listLowStockProducts } f
 import { listProducts } from "../services/products.js";
 import { listActiveVendorOptions } from "../services/vendors.js";
 import { refreshProductCatalog } from "../services/productCatalog.js";
+import { rowNumberColumn } from "../utils/tableColumns.js";
 
 const message = useMessage();
 const movements = ref([]);
@@ -32,6 +33,7 @@ const receiveForm = ref({ productId: null, quantity: 1, unitCost: 0, vendorId: n
 const adjustForm = ref({ productId: null, quantityChange: -1, movementType: "damage", notes: "" });
 
 const columns = [
+  rowNumberColumn(1, 50),
   { title: "When", key: "created_at", width: 160, render: (r) => new Date(r.created_at).toLocaleString() },
   { title: "Product", key: "products", render: (r) => r.products?.name || "—" },
   { title: "Type", key: "movement_type" },
@@ -100,13 +102,13 @@ onMounted(load);
     </NSpace>
     <p v-if="lowStock.length"><strong>Low stock:</strong> {{ lowStock.map((p) => p.name).join(", ") }}</p>
     <NDataTable :loading="loading" :columns="columns" :data="movements" />
-    <NModal v-model:show="showReceive" preset="card" title="Receive stock" style="width: 480px">
-      <NForm>
-        <NFormItem label="Product"><NSelect v-model:value="receiveForm.productId" :options="productOptions" filterable /></NFormItem>
+    <NModal v-model:show="showReceive" preset="card" title="Receive stock" style="width: min(640px, 96vw)">
+      <NForm label-placement="top" class="inv-form-grid">
+        <NFormItem label="Product" class="span-2"><NSelect v-model:value="receiveForm.productId" :options="productOptions" filterable /></NFormItem>
         <NFormItem label="Quantity"><NInputNumber v-model:value="receiveForm.quantity" :min="1" style="width: 100%" /></NFormItem>
         <NFormItem label="Purchase cost (per unit)"><NInputNumber v-model:value="receiveForm.unitCost" :min="0" style="width: 100%" /></NFormItem>
-        <NFormItem label="Vendor"><NSelect v-model:value="receiveForm.vendorId" :options="vendorOptions" clearable /></NFormItem>
-        <NFormItem label="Notes"><NInput v-model:value="receiveForm.notes" type="textarea" /></NFormItem>
+        <NFormItem label="Vendor" class="span-2"><NSelect v-model:value="receiveForm.vendorId" :options="vendorOptions" clearable /></NFormItem>
+        <NFormItem label="Notes" class="span-2"><NInput v-model:value="receiveForm.notes" type="textarea" /></NFormItem>
       </NForm>
       <template #footer><NButton type="primary" @click="submitReceive">Confirm receipt</NButton></template>
     </NModal>
@@ -121,3 +123,17 @@ onMounted(load);
     </NModal>
   </div>
 </template>
+
+<style scoped>
+.inv-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 16px;
+}
+.inv-form-grid :deep(.n-form-item) {
+  margin-bottom: 8px;
+}
+.span-2 {
+  grid-column: span 2;
+}
+</style>

@@ -1,10 +1,15 @@
 import { formatPkr } from "./format.js";
+import { estimateWrappedLines, maxNameLinesForLabel, wrapLabelLines } from "./labelText.js";
 
 /** ZD220 default resolution */
-const DEFAULT_DPI = 203;
+export const LABEL_DPI = 203;
 
-function dots(mm, dpi = DEFAULT_DPI) {
+function dots(mm, dpi = LABEL_DPI) {
   return Math.round((mm * dpi) / 25.4);
+}
+
+export function dotsToMm(dotCount, dpi = LABEL_DPI) {
+  return (dotCount / dpi) * 25.4;
 }
 
 function clamp(n, min, max) {
@@ -20,81 +25,209 @@ export function zplField(text) {
     .replace(/_/g, "\\_");
 }
 
-function truncate(text, maxLen) {
-  const s = String(text ?? "");
-  if (s.length <= maxLen) return s;
-  return `${s.slice(0, maxLen - 1)}…`;
+/**
+ * Code 128 symbol modules (approx): start + data + check + stop + quiet zones.
+ * Quiet zones (~10 modules each side) are required for scanners to read.
+ */
+function code128Modules(charLen) {
+  const n = Math.max(1, charLen);
+  const symbol = 11 + n * 11 + 11 + 13;
+  const quiet = 20; // 10 left + 10 right
+  return symbol + quiet;
 }
 
-function centeredBarcodeX(pw, charLen, moduleW, margin) {
-  const estWidth = (charLen * 11 + 35) * moduleW;
-  return Math.max(margin, Math.round((pw - estWidth) / 2));
+/** Pick module width (1–2) so barcode + quiet zones fit inside maxWidth dots */
+function fitBarcodeModule(charLen, maxWidth) {
+  const mods = code128Modules(charLen);
+  if (mods * 2 <= maxWidth) return 2;
+  return 1;
 }
+
+function barcodeWidthDots(charLen, moduleW) {
+  return code128Modules(charLen) * moduleW;
+}
+
+/** Printed above product name on every barcode label */
+export const LABEL_STORE_TITLE = "Dollar World by WABz";
 
 /**
- * Retail label — large readable text, vertically centered.
- * Top: product name · Middle: barcode + ID · Bottom: price
+ * Shared layout math for ZPL print and on-screen preview (203 dpi).
+ * @param {{ name?: string, barcode?: string, price?: number }} label
  */
-function buildRetailLabelZpl(label, widthMm, heightMm, dpi) {
+export function computeRetailLabelLayout(label, widthMm, heightMm, dpi = LABEL_DPI) {
   const pw = dots(widthMm, dpi);
   const ll = dots(heightMm, dpi);
-  const sideM = Math.max(3, dots(0.8, dpi));
+  const sideM = Math.max(4, dots(1.2, dpi));
   const innerW = pw - 2 * sideM;
-  const gap = Math.max(2, dots(0.35, dpi));
-  /** Extra space between barcode ID (HRI) and price so Rs does not overlap */
-  const priceGap = Math.max(gap + 16, dots(3.2, dpi));
+  const gap = Math.max(2, dots(0.3, dpi));
+  const titleGap = Math.max(1, dots(0.25, dpi));
+  const priceGap = Math.max(gap + 12, dots(2.6, dpi));
 
   const rawCode = String(label.barcode ?? "").trim();
-  const code = zplField(rawCode);
-  const nameMax = widthMm < 30 ? 14 : widthMm < 45 ? 22 : 28;
-  const name = zplField(truncate(label.name, nameMax));
-  const price = zplField(formatPkr(label.price));
+  const priceText = formatPkr(label.price);
 
-  if (!code) {
+  if (!rawCode) {
+    return {
+      dpi,
+      pw,
+      ll,
+      hasBarcode: false,
+      title: LABEL_STORE_TITLE,
+      name: String(label.name ?? ""),
+      priceText,
+      barcode: "",
+    };
+  }
+
+  const maxNameLines = maxNameLinesForLabel(widthMm, heightMm);
+  let nameFont = clamp(Math.round(ll * 0.16), 16, 24);
+  let nameLines = Math.min(maxNameLines, estimateWrappedLines(label.name, innerW, nameFont));
+
+  let needed = estimateWrappedLines(label.name, innerW, nameFont);
+  while (needed > maxNameLines && nameFont > 13) {
+    nameFont -= 1;
+    needed = estimateWrappedLines(label.name, innerW, nameFont);
+  }
+  nameLines = Math.min(maxNameLines, Math.max(1, needed));
+
+  const titleFont = clamp(nameFont + 1, 15, 22);
+  const priceFont = clamp(Math.round(ll * 0.14), 14, 22);
+  const idFont = clamp(nameFont - 1, 13, 20);
+  const titleH = titleFont;
+  const idH = idFont;
+  const idGap = Math.max(1, dots(0.2, dpi));
+  let barH = clamp(Math.round(ll * 0.26), 24, 50);
+
+  function nameBlockHeight() {
+    const lineGap = Math.max(0, Math.round(nameFont * 0.08));
+    return nameLines * nameFont + (nameLines - 1) * lineGap;
+  }
+
+  function totalBlockHeight() {
+    return (
+      titleH +
+      titleGap +
+      nameBlockHeight() +
+      gap +
+      barH +
+      idGap +
+      idH +
+      priceGap +
+      priceFont
+    );
+  }
+
+  let blockH = totalBlockHeight();
+  const maxBlock = Math.round(ll * 0.97);
+  while (blockH > maxBlock && barH > 20) {
+    barH -= 2;
+    blockH = totalBlockHeight();
+  }
+  while (blockH > maxBlock && nameFont > 12) {
+    nameFont -= 1;
+    nameLines = Math.min(maxNameLines, estimateWrappedLines(label.name, innerW, nameFont));
+    blockH = totalBlockHeight();
+  }
+  const nameLineGap = Math.max(0, Math.round(nameFont * 0.08));
+  const nameHFinal = nameBlockHeight();
+
+  let startY = Math.round((ll - blockH) / 2);
+  startY = Math.max(dots(0.35, dpi), startY);
+
+  const titleY = startY;
+  const nameY = titleY + titleH + titleGap;
+  const barY = nameY + nameHFinal + gap;
+  const hriY = barY + barH + idGap;
+  const priceY = hriY + idH + priceGap;
+
+  const moduleW = fitBarcodeModule(rawCode.length, innerW);
+  const barW = barcodeWidthDots(rawCode.length, moduleW);
+  const barX = Math.max(sideM, Math.round((pw - barW) / 2));
+
+  const nameLineTexts = wrapLabelLines(label.name, innerW, nameFont, nameLines);
+
+  return {
+    dpi,
+    pw,
+    ll,
+    hasBarcode: true,
+    widthMm,
+    heightMm,
+    sideM,
+    innerW,
+    title: LABEL_STORE_TITLE,
+    name: String(label.name ?? ""),
+    nameLineTexts,
+    priceText,
+    barcode: rawCode,
+    titleFont,
+    nameFont,
+    priceFont,
+    idFont,
+    nameLines,
+    nameLineGap,
+    titleY,
+    nameY,
+    barY,
+    hriY,
+    priceY,
+    barH,
+    barW,
+    barX,
+    moduleW,
+    titleH,
+    nameHFinal,
+    idH,
+  };
+}
+
+function buildRetailLabelZpl(label, widthMm, heightMm, dpi) {
+  const layout = computeRetailLabelLayout(label, widthMm, heightMm, dpi);
+  const { pw, ll, sideM, innerW, hasBarcode } = layout;
+
+  if (!hasBarcode) {
     return `^XA^PW${pw}^LL${ll}^LH0,0^FO${sideM},${Math.round(ll / 2)}^A0N,18,18^FB${innerW},1,0,C,0^FDNo barcode^FS^XZ`;
   }
 
-  // Larger fonts for readability (40×25 ≈ 200×150 dots @ 203 dpi)
-  const nameFont = clamp(Math.round(ll * 0.14), 14, 22);
-  const priceFont = clamp(Math.round(ll * 0.16), 16, 26);
-  const nameLines = 1;
-  const nameH = nameFont * nameLines;
-  const hriH = 12;
-  let barH = clamp(Math.round(ll * 0.38), 32, 70);
+  const code = zplField(layout.barcode);
+  const title = zplField(layout.title);
+  const name = zplField(label.name);
+  const price = zplField(layout.priceText);
 
-  let blockH = nameH + gap + barH + hriH + priceGap + priceFont;
-  const maxBlock = Math.round(ll * 0.94);
-  while (blockH > maxBlock && barH > 28) {
-    barH -= 2;
-    blockH = nameH + gap + barH + hriH + priceGap + priceFont;
-  }
-
-  let startY = Math.round((ll - blockH) / 2);
-  startY = Math.max(dots(0.6, dpi), startY);
-
-  const nameY = startY;
-  const barY = nameY + nameH + gap;
-  const priceY = barY + barH + hriH + priceGap;
-
-  // Prefer thicker bars when width allows (more scannable / visible)
-  let moduleW = innerW >= 280 ? 2 : 1;
-  const barX = centeredBarcodeX(pw, rawCode.length, moduleW, sideM);
+  const {
+    titleFont,
+    nameFont,
+    priceFont,
+    idFont,
+    nameLines,
+    nameLineGap,
+    titleY,
+    nameY,
+    barY,
+    hriY,
+    priceY,
+    barH,
+    barX,
+    moduleW,
+  } = layout;
 
   return `^XA
 ^MMT
 ^PW${pw}
 ^LL${ll}
 ^LH0,0
-^FO${sideM},${nameY}^A0N,${nameFont},${nameFont}^FB${innerW},${nameLines},0,C,0^FD${name}^FS
-^FO${barX},${barY}^BY${moduleW},2,${barH}^BCN,${barH},Y,N,N^FD${code}^FS
+^FO${sideM},${titleY}^A0N,${titleFont},${titleFont}^FB${innerW},1,0,C,0^FD${title}^FS
+^FO${sideM},${nameY}^A0N,${nameFont},${nameFont}^FB${innerW},${nameLines},${nameLineGap},C,0^FD${name}^FS
+^FO${barX},${barY}^BY${moduleW},2,${barH}^BCN,${barH},N,N,N^FD${code}^FS
+^FO${sideM},${hriY}^A0N,${idFont},${idFont}^FB${innerW},1,0,C,0^FD${code}^FS
 ^FO${sideM},${priceY}^A0N,${priceFont},${priceFont}^FB${innerW},1,0,C,0^FD${price}^FS
 ^XZ`;
 }
 
-export function buildLabelZpl(label, widthMm = 40, heightMm = 25, dpi = DEFAULT_DPI) {
+export function buildLabelZpl(label, widthMm = 40, heightMm = 25, dpi = LABEL_DPI) {
   return buildRetailLabelZpl(label, widthMm, heightMm, dpi);
 }
 
-export function buildBatchZpl(labels, widthMm = 40, heightMm = 25, dpi = DEFAULT_DPI) {
+export function buildBatchZpl(labels, widthMm = 40, heightMm = 25, dpi = LABEL_DPI) {
   return labels.map((l) => buildLabelZpl(l, widthMm, heightMm, dpi)).join("\n");
 }

@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { requireSupabase, supabaseConfigured } from "../lib/supabase.js";
+import { notifyProductCatalogUpdated } from "../utils/catalogSync.js";
 
 const STORAGE_KEY = "dw_product_catalog_v1";
 
@@ -27,6 +28,16 @@ function saveToStorage(products, syncedAt) {
     );
   } catch {
     /* quota — memory cache still works */
+  }
+}
+
+function applyStoragePayload(raw) {
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!Array.isArray(parsed?.products)) return false;
+    return parsed;
+  } catch {
+    return false;
   }
 }
 
@@ -100,7 +111,7 @@ export const useProductCacheStore = defineStore("productCache", () => {
     saveToStorage(products.value, syncedAt.value);
   }
 
-  function searchForPos(term, limit = 20) {
+  function searchForPos(term, limit = 30) {
     const q = String(term ?? "").trim().toLowerCase();
     if (!q) return [];
     return activeProducts.value
@@ -152,8 +163,21 @@ export const useProductCacheStore = defineStore("productCache", () => {
 export async function refreshProductCatalog() {
   const store = useProductCacheStore();
   await store.refresh();
+  notifyProductCatalogUpdated();
 }
 
 export function clearProductCatalog() {
   useProductCacheStore().clear();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key !== STORAGE_KEY || !e.newValue) return;
+    const parsed = applyStoragePayload(e.newValue);
+    if (!parsed) return;
+    const store = useProductCacheStore();
+    store.products = parsed.products;
+    store.syncedAt = parsed.syncedAt ?? null;
+    notifyProductCatalogUpdated();
+  });
 }

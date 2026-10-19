@@ -11,6 +11,15 @@ export function isTypingInField(event) {
 /** Function keys and Alt+digit work even while focused in an input. */
 export function isGlobalChord(event) {
   if (/^F\d{1,2}$/i.test(event.key)) return true;
+  if (event.shiftKey && /^F1[12]$/i.test(event.key) && !event.ctrlKey && !event.altKey) return true;
+  if (
+    event.ctrlKey &&
+    event.shiftKey &&
+    !event.altKey &&
+    (event.code === "BracketLeft" || event.code === "BracketRight")
+  ) {
+    return true;
+  }
   if (event.altKey && /^[1-9]$/.test(event.key)) return true;
   if (event.ctrlKey && event.key === "/") return true;
   if (event.key === "?" && event.shiftKey) return true;
@@ -47,17 +56,23 @@ export const SHORTCUT_GROUPS = [
   {
     title: "POS / New Sale",
     items: [
+      { keys: "Tab", desc: "Cycle: scan → cart filter → discount → cash" },
       { keys: "F2", desc: "Focus barcode scan" },
-      { keys: "F3", desc: "Focus product search" },
+      { keys: "F3", desc: "Focus cart line filter" },
       { keys: "F4", desc: "Focus discount" },
       { keys: "F5", desc: "Focus cash received" },
       { keys: "F6", desc: "Cash received = exact total" },
       { keys: "F7", desc: "Hold order" },
-      { keys: "F8", desc: "New order" },
+      { keys: "F8", desc: "New tab" },
       { keys: "F9", desc: "Complete sale" },
+      { keys: "F10", desc: "Clear cart (confirms if not empty)" },
+      { keys: "Shift + F12", desc: "Next sale tab" },
+      { keys: "Shift + F11", desc: "Previous sale tab" },
+      { keys: "Ctrl + Shift + ]", desc: "Next sale tab (alternate)" },
+      { keys: "Ctrl + Shift + [", desc: "Previous sale tab (alternate)" },
       { keys: "Ctrl + Enter", desc: "Complete sale" },
       { keys: "↑ / ↓", desc: "Move in search results" },
-      { keys: "Enter", desc: "Add highlighted search result (when results open)" },
+      { keys: "Enter", desc: "Add from catalog / confirm qty → back to scan" },
       { keys: "P", desc: "Print receipt (receipt open)" },
     ],
   },

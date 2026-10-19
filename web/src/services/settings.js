@@ -22,6 +22,7 @@ export async function updateSettings(payload) {
     receipt_show_payment: Boolean(payload.receipt_show_payment),
     label_width_mm: Number(payload.label_width_mm) || 50,
     label_height_mm: Number(payload.label_height_mm) || 30,
+    pos_auto_collapse_sidebar: payload.pos_auto_collapse_sidebar !== false,
     updated_at: new Date().toISOString(),
   };
   if (current?.id) {

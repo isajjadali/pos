@@ -1,5 +1,10 @@
 import { requireSupabase } from "../lib/supabase.js";
-import { findProductByCodeCached, isProductCatalogReady, searchProductsCached } from "./productCatalog.js";
+import {
+  findProductByCodeCached,
+  isProductCatalogReady,
+  refreshProductCatalog,
+  searchProductsCached,
+} from "./productCatalog.js";
 
 export async function listOpenOrders() {
   const sb = requireSupabase();
@@ -213,5 +218,6 @@ export async function completeSaleFromCart(lines, { discount = 0, amountReceived
     p_amount_received: Number(amountReceived) || 0,
   });
   if (error) throw error;
+  await refreshProductCatalog().catch(() => {});
   return data;
 }

@@ -13,6 +13,5 @@ app.use(router);
 app.use(naive);
 
 const auth = useAuthStore();
-auth.init().finally(() => {
-  app.mount("#app");
-});
+await auth.init();
+app.mount("#app");

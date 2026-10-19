@@ -18,6 +18,8 @@ import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { useAuthStore } from "../stores/auth.js";
 import { listStaffUsers, updateStaffUser, createStaffUser } from "../services/staff.js";
+import { rowNumberColumn } from "../utils/tableColumns.js";
+import { toTitleCase } from "../utils/titleCase.js";
 
 const message = useMessage();
 const auth = useAuthStore();
@@ -48,6 +50,7 @@ function emptyEditForm() {
 const editForm = ref(emptyEditForm());
 
 const columns = [
+  rowNumberColumn(1, 100),
   { title: "Name", key: "full_name", render: (row) => row.full_name || "—" },
   { title: "Email", key: "email", ellipsis: { tooltip: true } },
   {
@@ -105,6 +108,7 @@ function openEdit(row) {
 async function saveCreate() {
   saving.value = true;
   try {
+    createForm.value.full_name = toTitleCase(createForm.value.full_name);
     await createStaffUser(createForm.value);
     message.success("Staff account created");
     showCreate.value = false;
@@ -127,6 +131,7 @@ async function saveEdit() {
   if (!editing.value) return;
   saving.value = true;
   try {
+    editForm.value.full_name = toTitleCase(editForm.value.full_name);
     await updateStaffUser(editing.value.id, editForm.value);
     message.success("Staff updated");
     showEdit.value = false;
@@ -166,12 +171,12 @@ onMounted(load);
     <NDataTable :loading="loading" :columns="columns" :data="rows" :row-key="(r) => r.id" />
   </div>
 
-  <NModal v-model:show="showCreate" preset="card" title="New staff account" style="width: 440px">
-    <NForm label-placement="top">
-      <NFormItem label="Full name">
+  <NModal v-model:show="showCreate" preset="card" title="New staff account" style="width: min(560px, 96vw)">
+    <NForm label-placement="top" class="staff-form-grid">
+      <NFormItem label="Full name" class="span-2">
         <NInput v-model:value="createForm.full_name" placeholder="Optional display name" />
       </NFormItem>
-      <NFormItem label="Email" required>
+      <NFormItem label="Email" required class="span-2">
         <NInput v-model:value="createForm.email" type="email" autocomplete="off" />
       </NFormItem>
       <NFormItem label="Password" required>
@@ -222,3 +227,17 @@ onMounted(load);
     </template>
   </NModal>
 </template>
+
+<style scoped>
+.staff-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 16px;
+}
+.staff-form-grid :deep(.n-form-item) {
+  margin-bottom: 8px;
+}
+.span-2 {
+  grid-column: span 2;
+}
+</style>

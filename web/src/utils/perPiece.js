@@ -1,4 +1,4 @@
-/** Match pack size in product name (same rules as root sheet-io). */
+/** Match pack size in product name for per-piece cost hints. */
 export function parsePiecesFromProductName(productName) {
   const name = String(productName ?? "");
   if (/\b\d+\s*dz\b/i.test(name)) return 12;

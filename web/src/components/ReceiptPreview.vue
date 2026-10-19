@@ -11,12 +11,20 @@ const props = defineProps({
 
 const vm = computed(() => buildReceiptViewModel(props.sale, props.items, props.settings));
 const paperStyle = computed(() => receiptPaperStyle(props.settings));
+
+const titleParts = computed(() => {
+  const raw = String(vm.value.storeName || "").trim();
+  const m = raw.match(/^(.*?)\s+by\s+(.+)$/i);
+  if (m) return { main: m[1].toUpperCase(), sub: `by ${m[2]}` };
+  return { main: raw.toUpperCase(), sub: "" };
+});
 </script>
 
 <template>
   <div class="receipt-wrap">
     <div class="receipt-paper" :style="paperStyle">
-      <div class="store">{{ vm.storeName }}</div>
+      <div class="store">{{ titleParts.main }}</div>
+      <div v-if="titleParts.sub" class="store-sub">{{ titleParts.sub }}</div>
       <div v-if="vm.headerLine" class="header-line">{{ vm.headerLine }}</div>
       <div class="meta">
         <div>{{ vm.reference }}</div>
@@ -70,10 +78,18 @@ const paperStyle = computed(() => receiptPaperStyle(props.settings));
   text-align: left;
 }
 .store {
-  font-weight: 700;
-  font-size: 1.15em;
+  font-weight: 800;
+  font-size: 1.55em;
+  letter-spacing: 0.06em;
+  line-height: 1.15;
   text-align: center;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
+}
+.store-sub {
+  font-weight: 700;
+  font-size: 1.05em;
+  text-align: center;
+  margin-bottom: 6px;
 }
 .header-line {
   text-align: center;

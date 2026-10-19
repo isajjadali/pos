@@ -1,0 +1,281 @@
+<script setup>
+import { ref, onMounted, computed, h } from "vue";
+import {
+  NCard,
+  NButton,
+  NDataTable,
+  NModal,
+  NForm,
+  NFormItem,
+  NInput,
+  NInputNumber,
+  NDatePicker,
+  NSwitch,
+  NSpace,
+  NText,
+  useMessage,
+  useDialog,
+} from "naive-ui";
+import { supabaseConfigured } from "../lib/supabase.js";
+import { formatPkr } from "../utils/format.js";
+import { formatScheduledPromoRule, scheduledPromoUsesPercent } from "../utils/scheduledDiscount.js";
+import {
+  localDateIso,
+  listScheduledSaleDiscounts,
+  createScheduledSaleDiscount,
+  updateScheduledSaleDiscount,
+  deleteScheduledSaleDiscount,
+} from "../services/scheduledDiscounts.js";
+
+const message = useMessage();
+const dialog = useDialog();
+const rows = ref([]);
+const loading = ref(false);
+const modalOpen = ref(false);
+const saving = ref(false);
+const editingId = ref(null);
+
+const today = localDateIso();
+
+const form = ref({
+  name: "",
+  discount_amount: 0,
+  discount_percent: 0,
+  start_date: today,
+  end_date: today,
+  is_active: true,
+});
+
+const startPicker = computed({
+  get: () => dateToPicker(form.value.start_date),
+  set: (v) => {
+    form.value.start_date = pickerToDate(v);
+    if (form.value.end_date < form.value.start_date) {
+      form.value.end_date = form.value.start_date;
+    }
+  },
+});
+
+const endPicker = computed({
+  get: () => dateToPicker(form.value.end_date),
+  set: (v) => {
+    form.value.end_date = pickerToDate(v);
+  },
+});
+
+function dateToPicker(iso) {
+  if (!iso) return null;
+  const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d).getTime();
+}
+
+function pickerToDate(ts) {
+  if (!ts) return today;
+  const d = new Date(ts);
+  return localDateIso(d);
+}
+
+function formatRange(row) {
+  return `${row.start_date} → ${row.end_date}`;
+}
+
+function statusLabel(row) {
+  if (!row.is_active) return "Off";
+  if (row.end_date < today) return "Ended";
+  if (row.start_date > today) return "Scheduled";
+  return "Active now";
+}
+
+const columns = [
+  { title: "Name", key: "name", render: (r) => r.name || "—" },
+  {
+    title: "Discount",
+    key: "discount",
+    render: (r) => {
+      if (scheduledPromoUsesPercent(r)) {
+        const amt = Number(r.discount_amount) > 0 ? ` (PKR ignored)` : "";
+        return `${r.discount_percent}%${amt}`;
+      }
+      return formatScheduledPromoRule(r, formatPkr);
+    },
+  },
+  { title: "Dates", key: "dates", render: (r) => formatRange(r) },
+  { title: "Status", key: "status", render: (r) => statusLabel(r) },
+  {
+    title: "",
+    key: "actions",
+    width: 140,
+    render: (row) =>
+      h(NSpace, { size: "small" }, () => [
+        h(
+          NButton,
+          { size: "small", quaternary: true, onClick: () => openEdit(row) },
+          () => "Edit"
+        ),
+        h(
+          NButton,
+          { size: "small", quaternary: true, type: "error", onClick: () => confirmDelete(row) },
+          () => "Delete"
+        ),
+      ]),
+  },
+];
+
+function openCreate() {
+  editingId.value = null;
+  form.value = {
+    name: "",
+    discount_amount: 0,
+    discount_percent: 10,
+    start_date: today,
+    end_date: today,
+    is_active: true,
+  };
+  modalOpen.value = true;
+}
+
+function openEdit(row) {
+  editingId.value = row.id;
+  form.value = {
+    name: row.name ?? "",
+    discount_amount: Number(row.discount_amount) || 0,
+    discount_percent: Number(row.discount_percent) || 0,
+    start_date: row.start_date,
+    end_date: row.end_date,
+    is_active: row.is_active !== false,
+  };
+  modalOpen.value = true;
+}
+
+async function load() {
+  if (!supabaseConfigured) return;
+  loading.value = true;
+  try {
+    rows.value = await listScheduledSaleDiscounts();
+  } catch (e) {
+    message.error(e.message || "Could not load scheduled discounts");
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function save() {
+  if (!form.value.start_date || !form.value.end_date) {
+    message.warning("Choose start and end dates");
+    return;
+  }
+  if (form.value.end_date < form.value.start_date) {
+    message.warning("End date must be on or after start date");
+    return;
+  }
+  const pct = Number(form.value.discount_percent) || 0;
+  const amt = Number(form.value.discount_amount) || 0;
+  if (pct <= 0 && amt <= 0) {
+    message.warning("Set a discount percent or a fixed PKR amount");
+    return;
+  }
+  saving.value = true;
+  try {
+    if (editingId.value) {
+      await updateScheduledSaleDiscount(editingId.value, form.value);
+      message.success("Discount updated");
+    } else {
+      await createScheduledSaleDiscount(form.value);
+      message.success("Discount created");
+    }
+    modalOpen.value = false;
+    await load();
+  } catch (e) {
+    message.error(e.message || "Save failed");
+  } finally {
+    saving.value = false;
+  }
+}
+
+function confirmDelete(row) {
+  dialog.warning({
+    title: "Delete scheduled discount?",
+    content: row.name ? `"${row.name}"` : formatRange(row),
+    positiveText: "Delete",
+    negativeText: "Cancel",
+    onPositiveClick: async () => {
+      try {
+        await deleteScheduledSaleDiscount(row.id);
+        message.success("Deleted");
+        await load();
+      } catch (e) {
+        message.error(e.message || "Delete failed");
+      }
+    },
+  });
+}
+
+onMounted(load);
+</script>
+
+<template>
+  <NCard title="Scheduled sale discounts" class="scheduled-discounts-card">
+    <NText depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
+      During the date range, POS applies the discount on every new sale automatically. If percent is
+      set, it is used (even when PKR amount is also filled); otherwise the fixed PKR amount applies.
+      Percent discounts update as the cart subtotal changes. Cashiers can remove it per sale.
+    </NText>
+    <NSpace style="margin-bottom: 12px">
+      <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
+        Add scheduled discount
+      </NButton>
+    </NSpace>
+    <NDataTable :columns="columns" :data="rows" :loading="loading" size="small" :bordered="false" />
+
+    <NModal
+      v-model:show="modalOpen"
+      preset="card"
+      :title="editingId ? 'Edit scheduled discount' : 'New scheduled discount'"
+      style="width: min(440px, 96vw)"
+    >
+      <NForm label-placement="top">
+        <NFormItem label="Label (optional)">
+          <NInput v-model:value="form.name" placeholder="e.g. Eid week sale" />
+        </NFormItem>
+        <NFormItem label="Discount percent (%)">
+          <NInputNumber
+            v-model:value="form.discount_percent"
+            :min="0"
+            :max="100"
+            :precision="2"
+            style="width: 100%"
+          />
+        </NFormItem>
+        <NFormItem label="Discount amount (PKR)">
+          <NInputNumber v-model:value="form.discount_amount" :min="0" style="width: 100%" />
+        </NFormItem>
+        <NText depth="3" style="font-size: 12px; display: block; margin: -8px 0 12px">
+          Percent &gt; 0 uses percent of subtotal. Both filled → percent only. Only PKR → fixed amount.
+        </NText>
+        <NFormItem label="Start date">
+          <NDatePicker v-model:value="startPicker" type="date" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="End date (inclusive)">
+          <NDatePicker v-model:value="endPicker" type="date" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="Active">
+          <NSwitch v-model:value="form.is_active" />
+        </NFormItem>
+      </NForm>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="modalOpen = false">Cancel</NButton>
+          <NButton type="primary" :loading="saving" @click="save">Save</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+  </NCard>
+</template>
+
+<style scoped>
+.scheduled-discounts-card {
+  width: 100%;
+  max-width: none;
+}
+</style>

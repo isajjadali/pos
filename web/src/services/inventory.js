@@ -1,4 +1,5 @@
 import { requireSupabase } from "../lib/supabase.js";
+import { refreshProductCatalog } from "./productCatalog.js";
 
 export async function listStockMovements({ productId = null, page = 1, pageSize = 30 } = {}) {
   const sb = requireSupabase();
@@ -25,6 +26,7 @@ export async function receiveStock({ productId, quantity, unitCost, vendorId, no
     p_notes: notes || null,
   });
   if (error) throw error;
+  await refreshProductCatalog().catch(() => {});
   return data;
 }
 
@@ -37,6 +39,29 @@ export async function adjustStock({ productId, quantityChange, movementType, not
     p_notes: notes || null,
   });
   if (error) throw error;
+  await refreshProductCatalog().catch(() => {});
+}
+
+/** Set on-hand quantity to an exact value (records stock_movements correction). */
+export async function setProductStock(productId, newQuantity, notes) {
+  const sb = requireSupabase();
+  const { data: row, error: fetchError } = await sb
+    .from("products")
+    .select("current_stock")
+    .eq("id", productId)
+    .single();
+  if (fetchError) throw fetchError;
+  const prev = Math.floor(Number(row.current_stock) || 0);
+  const target = Math.max(0, Math.floor(Number(newQuantity) || 0));
+  const delta = target - prev;
+  if (delta === 0) return target;
+  await adjustStock({
+    productId,
+    quantityChange: delta,
+    movementType: "correction",
+    notes: notes || "Stock updated from Products",
+  });
+  return target;
 }
 
 export async function listLowStockProducts() {

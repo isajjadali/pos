@@ -1,4 +1,5 @@
 import { requireSupabase } from "../lib/supabase.js";
+import { refreshProductCatalog } from "./productCatalog.js";
 
 export async function listSales({ page = 1, pageSize = 20 } = {}) {
   const sb = requireSupabase();
@@ -12,6 +13,49 @@ export async function listSales({ page = 1, pageSize = 20 } = {}) {
     .range(from, to);
   if (error) throw error;
   return { rows: data ?? [], total: count ?? 0 };
+}
+
+function formatSaleDeleteError(error) {
+  const msg = String(error?.message || error || "");
+  if (/delete_sale_admin/i.test(msg) && /schema cache|could not find|function/i.test(msg)) {
+    return (
+      "Sale delete is not set up on the database yet. Run the latest Supabase migration " +
+      "(20251017200000 and 20251017210000) then try again."
+    );
+  }
+  if (/admin only/i.test(msg)) {
+    return "Only admin can delete sales. Check your profile role in Staff users.";
+  }
+  return msg || "Delete failed";
+}
+
+export async function deleteSale(saleId) {
+  const sb = requireSupabase();
+  const { data, error } = await sb.rpc("delete_sale_admin", { p_sale_id: saleId });
+  if (error) {
+    const wrapped = new Error(formatSaleDeleteError(error));
+    wrapped.cause = error;
+    throw wrapped;
+  }
+  await refreshProductCatalog().catch(() => {});
+  return data;
+}
+
+export async function deleteSalesBulk(saleIds) {
+  const sb = requireSupabase();
+  const unique = [...new Set((saleIds || []).filter(Boolean))];
+  if (!unique.length) return { deleted: 0, failed: [] };
+  const { data, error } = await sb.rpc("delete_sales_bulk", { p_sale_ids: unique });
+  if (error) {
+    const wrapped = new Error(formatSaleDeleteError(error));
+    wrapped.cause = error;
+    throw wrapped;
+  }
+  await refreshProductCatalog().catch(() => {});
+  return {
+    deleted: data?.deleted ?? 0,
+    failed: data?.failed ?? [],
+  };
 }
 
 export async function getSale(id) {

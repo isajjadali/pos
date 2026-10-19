@@ -1,4 +1,5 @@
 import { requireSupabase } from "../lib/supabase.js";
+import { toTitleCase } from "../utils/titleCase.js";
 
 export async function listCategories() {
   const sb = requireSupabase();
@@ -8,7 +9,7 @@ export async function listCategories() {
 }
 
 export async function createCategory(name) {
-  const trimmed = String(name ?? "").trim();
+  const trimmed = toTitleCase(name);
   if (!trimmed) throw new Error("Category name is required");
   const sb = requireSupabase();
   const { data, error } = await sb.from("categories").insert({ name: trimmed }).select().single();

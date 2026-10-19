@@ -1,6 +1,7 @@
 import { useProductCacheStore, refreshProductCatalog } from "../stores/productCache.js";
 
 export { refreshProductCatalog, clearProductCatalog } from "../stores/productCache.js";
+export { PRODUCT_CATALOG_UPDATED, notifyProductCatalogUpdated } from "../utils/catalogSync.js";
 
 export function searchProductsCached(term, limit = 20) {
   return useProductCacheStore().searchForPos(term, limit);

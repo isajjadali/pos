@@ -1,7 +1,8 @@
+import { watch } from "vue";
 import { createRouter, createWebHistory } from "vue-router";
 import { useAuthStore } from "../stores/auth.js";
 import { supabaseConfigured } from "../lib/supabase.js";
-import { ADMIN_ONLY_ROUTES } from "../config/navigation.js";
+import { navRouteKeysForUser } from "../config/navigation.js";
 
 const routes = [
   {
@@ -33,11 +34,40 @@ const router = createRouter({
   routes,
 });
 
+function waitForAuthBootstrap(auth) {
+  if (!auth.loading) return Promise.resolve();
+  return new Promise((resolve) => {
+    const stop = watch(
+      () => auth.loading,
+      (loading) => {
+        if (!loading) {
+          stop();
+          resolve();
+        }
+      },
+      { immediate: true }
+    );
+  });
+}
+
+async function ensureSessionAndProfile(auth) {
+  await waitForAuthBootstrap(auth);
+  if (auth.isAuthenticated && !auth.profileLoaded) {
+    await auth.loadProfile();
+  }
+}
+
 router.beforeEach(async (to) => {
   const auth = useAuthStore();
 
+  await ensureSessionAndProfile(auth);
+
   if (to.meta.public) {
     if (supabaseConfigured && auth.isAuthenticated && to.name === "login") {
+      const redirect = to.query.redirect;
+      if (typeof redirect === "string" && redirect.startsWith("/")) {
+        return redirect;
+      }
       return { name: auth.isAdmin ? "dashboard" : "pos" };
     }
     return true;
@@ -45,18 +75,17 @@ router.beforeEach(async (to) => {
 
   if (!supabaseConfigured) return true;
 
-  if (!auth.isAuthenticated) return { name: "login", query: { redirect: to.fullPath } };
+  if (!auth.isAuthenticated) {
+    return { name: "login", query: { redirect: to.fullPath } };
+  }
 
   if (!auth.profileLoaded) {
-    await auth.loadProfile();
+    return true;
   }
 
-  if (ADMIN_ONLY_ROUTES.has(to.name) && !auth.isAdmin) {
-    return { name: "pos" };
-  }
-
-  if (to.name === "dashboard" && !auth.isAdmin) {
-    return { name: "pos" };
+  const allowed = navRouteKeysForUser(auth.isAdmin);
+  if (!allowed.includes(to.name)) {
+    return { name: allowed[0] ?? "pos" };
   }
 
   return true;

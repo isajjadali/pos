@@ -4,8 +4,6 @@
 
 - **Frontend:** `web/` — Vue 3, Vite, JavaScript, Naive UI, Pinia, Vue Router
 - **Backend:** Supabase (PostgreSQL, Auth, RLS)
-- **Legacy tools:** root Node scripts (`products.csv`, PDF barcode labels)
-
 ## Database setup (pick one)
 
 ### Option A — Supabase CLI (after link)

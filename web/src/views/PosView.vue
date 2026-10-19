@@ -1,5 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch, nextTick, h } from "vue";
+import { useRoute } from "vue-router";
 import { storeToRefs } from "pinia";
 import {
   NButton,
@@ -8,14 +9,13 @@ import {
   NInputNumber,
   NDataTable,
   NCard,
-  NTag,
-  NGrid,
-  NGi,
   NModal,
   NSpin,
   NText,
   useMessage,
+  useDialog,
 } from "naive-ui";
+import ClearFiltersButton from "../components/ClearFiltersButton.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import ReceiptPreview from "../components/ReceiptPreview.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
@@ -26,18 +26,39 @@ import {
   findProductByBarcode,
   completeSaleFromCart,
 } from "../services/pos.js";
-import { findProductByCodeCached, isProductCatalogReady, refreshProductCatalog } from "../services/productCatalog.js";
+import {
+  findProductByCodeCached,
+  isProductCatalogReady,
+  refreshProductCatalog,
+} from "../services/productCatalog.js";
+import { useProductCacheStore } from "../stores/productCache.js";
 import { getSale } from "../services/sales.js";
 import { getSettings } from "../services/settings.js";
-import { openReceiptPrintWindow } from "../utils/receipt.js";
+import { printReceipt } from "../utils/receiptPrint.js";
 import { shouldBlockShortcut } from "../utils/hotkeys.js";
 import { usePosCartStore } from "../stores/posCart.js";
+import { useLayoutStore } from "../stores/layout.js";
+import { PRODUCT_CATALOG_UPDATED } from "../utils/catalogSync.js";
+import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
+import { getActiveScheduledSaleDiscount } from "../services/scheduledDiscounts.js";
+import { formatScheduledPromoRule } from "../utils/scheduledDiscount.js";
 
 const message = useMessage();
+const dialog = useDialog();
+const route = useRoute();
 const cartStore = usePosCartStore();
-const { items, subtotal, carts, activeCartId } = storeToRefs(cartStore);
+const layoutStore = useLayoutStore();
+const productCache = useProductCacheStore();
+const { items, subtotal, carts, activeCartId, focusQtyLineId } = storeToRefs(cartStore);
 
-const search = ref("");
+const cartFilter = ref("");
+useRouteQuerySync({
+  cartQ: { ...routeQuery.string(cartFilter), debounceMs: 300 },
+});
+const hasCartLineFilter = computed(() => Boolean(cartFilter.value.trim()));
+function clearCartLineFilter() {
+  cartFilter.value = "";
+}
 const searchResults = ref([]);
 const cashReceived = ref(0);
 const completing = ref(false);
@@ -45,29 +66,152 @@ const scanBuffer = ref("");
 const receiptOpen = ref(false);
 const receiptDetail = ref(null);
 const receiptSettings = ref({});
+const receiptPrinting = ref(false);
+
+async function printSaleReceipt() {
+  if (!receiptDetail.value) return;
+  receiptPrinting.value = true;
+  try {
+    const res = await printReceipt(
+      receiptDetail.value.sale,
+      receiptDetail.value.items,
+      receiptSettings.value
+    );
+    if (res.warning) message.warning(res.warning);
+    else message.success(`Receipt sent to ${res.printerName || "printer"}`);
+  } catch (e) {
+    message.error(e.message || "Receipt print failed");
+  } finally {
+    receiptPrinting.value = false;
+  }
+}
 const scanRef = ref(null);
 const searchRef = ref(null);
 const discountRef = ref(null);
 const cashRef = ref(null);
 const selectedSearchIndex = ref(-1);
 const lookupLoading = ref(false);
-const activeLookupField = ref("scan");
 let lookupTimer;
+
+function lineMatchesFilter(line, q) {
+  const term = String(q ?? "").trim().toLowerCase();
+  if (!term) return true;
+  const p = line.products;
+  const hay = [p?.name, p?.sku, p?.barcode, line.product_id]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(term);
+}
+
+const displayItems = computed(() => {
+  const list = items.value;
+  if (!cartFilter.value.trim()) return list;
+  return list.filter((line) => lineMatchesFilter(line, cartFilter.value));
+});
 
 const discount = computed({
   get: () => cartStore.activeCart?.discount ?? 0,
   set: (v) => cartStore.setDiscount(v),
 });
 
+const activeScheduledPromo = ref(null);
+
+const scheduledPromoOnCart = computed(() => {
+  const cart = cartStore.activeCart;
+  if (!cart?.scheduledDiscountId || cart.scheduledDiscountDismissed) return null;
+  const promo = activeScheduledPromo.value;
+  if (!promo || promo.id !== cart.scheduledDiscountId) return null;
+  return promo;
+});
+
+async function applyScheduledPromoToCart() {
+  if (!supabaseConfigured) {
+    activeScheduledPromo.value = null;
+    cartStore.syncScheduledDiscount(null, subtotal.value);
+    return;
+  }
+  try {
+    activeScheduledPromo.value = await getActiveScheduledSaleDiscount(undefined, subtotal.value);
+  } catch {
+    activeScheduledPromo.value = null;
+  }
+  cartStore.syncScheduledDiscount(activeScheduledPromo.value, subtotal.value);
+}
+
+function refreshScheduledPromoForPos() {
+  return applyScheduledPromoToCart();
+}
+
+const scheduledPromoBannerText = computed(() => {
+  const p = scheduledPromoOnCart.value;
+  if (!p) return "";
+  const rule = formatScheduledPromoRule(p, formatPkr);
+  return `−${formatPkr(discount.value)} (${rule})`;
+});
+
+function removeScheduledPromoFromSale() {
+  cartStore.dismissScheduledDiscount();
+}
+
 const total = computed(() => Math.max(Number(subtotal.value || 0) - Number(discount.value || 0), 0));
 const changeDue = computed(() => Math.max(Number(cashReceived.value || 0) - total.value, 0));
 
+const posTabFieldRefs = [scanRef, searchRef, discountRef, cashRef];
+
 function focusRef(r) {
-  nextTick(() => r.value?.focus?.());
+  focusPosTabFieldByRef(r);
+}
+
+function refContainsElement(ref, el) {
+  const inst = ref?.value;
+  if (!inst || !el) return false;
+  const root = inst.$el ?? inst;
+  return typeof root.contains === "function" && root.contains(el);
+}
+
+function indexOfFocusedPosTabField() {
+  const el = document.activeElement;
+  for (let i = 0; i < posTabFieldRefs.length; i++) {
+    if (refContainsElement(posTabFieldRefs[i], el)) return i;
+  }
+  return -1;
+}
+
+function focusPosTabFieldByRef(r) {
+  nextTick(() => {
+    const inst = r?.value ?? r;
+    if (!inst) return;
+    if (typeof inst.focus === "function") {
+      inst.focus();
+      return;
+    }
+    const input = inst.$el?.querySelector?.("input");
+    input?.focus?.();
+    input?.select?.();
+  });
+}
+
+function focusPosTabFieldIndex(index) {
+  const ref = posTabFieldRefs[index];
+  if (ref) focusPosTabFieldByRef(ref);
+}
+
+function handlePosTabKey(e) {
+  if (receiptOpen.value) return;
+  e.preventDefault();
+  const n = posTabFieldRefs.length;
+  let idx = indexOfFocusedPosTabField();
+  if (idx < 0) {
+    focusPosTabFieldIndex(e.shiftKey ? n - 1 : 0);
+    return;
+  }
+  const next = e.shiftKey ? (idx - 1 + n) % n : (idx + 1) % n;
+  focusPosTabFieldIndex(next);
 }
 
 function currentLookupTerm() {
-  return activeLookupField.value === "scan" ? scanBuffer.value.trim() : search.value.trim();
+  return scanBuffer.value.trim();
 }
 
 function runLiveLookup(term) {
@@ -82,8 +226,8 @@ function runLiveLookup(term) {
 
   const local = searchProductsForPosLocal(q);
   if (local) {
-    searchResults.value = local;
-    selectedSearchIndex.value = local.length ? 0 : -1;
+    searchResults.value = enrichSearchResults(local);
+    selectedSearchIndex.value = firstSelectableSearchIndex(searchResults.value);
     lookupLoading.value = false;
     return;
   }
@@ -91,8 +235,8 @@ function runLiveLookup(term) {
   lookupLoading.value = true;
   searchProductsForPos(q)
     .then((rows) => {
-      searchResults.value = rows;
-      selectedSearchIndex.value = rows.length ? 0 : -1;
+      searchResults.value = enrichSearchResults(rows);
+      selectedSearchIndex.value = firstSelectableSearchIndex(searchResults.value);
     })
     .catch((e) => {
       message.error(e.message || "Search failed");
@@ -108,23 +252,56 @@ function scheduleLiveLookup() {
   lookupTimer = setTimeout(() => runLiveLookup(currentLookupTerm()), 280);
 }
 
-watch(search, () => {
-  if (activeLookupField.value === "search") scheduleLiveLookup();
+watch(scanBuffer, () => {
+  scheduleLiveLookup();
 });
 
-watch(scanBuffer, () => {
-  if (activeLookupField.value === "scan") scheduleLiveLookup();
-});
+function refreshSearchAvailability() {
+  if (!searchResults.value.length) return;
+  const raw = searchResults.value.map((p) => {
+    const { pos_available: _a, pos_in_stock: _s, ...rest } = p;
+    return rest;
+  });
+  searchResults.value = enrichSearchResults(raw);
+  if (
+    selectedSearchIndex.value < 0 ||
+    selectedSearchIndex.value >= searchResults.value.length ||
+    searchResults.value[selectedSearchIndex.value]?.pos_available <= 0
+  ) {
+    selectedSearchIndex.value = firstSelectableSearchIndex(searchResults.value);
+  }
+}
 
 watch(searchResults, (list) => {
   if (selectedSearchIndex.value >= list.length) {
-    selectedSearchIndex.value = list.length ? 0 : -1;
+    selectedSearchIndex.value = firstSelectableSearchIndex(list);
   } else if (list.length && selectedSearchIndex.value < 0) {
-    selectedSearchIndex.value = 0;
+    selectedSearchIndex.value = firstSelectableSearchIndex(list);
   }
 });
 
+watch(
+  () => carts.value.map((c) => c.items.map((l) => `${l.product_id}:${l.quantity}`).join(",")).join("|"),
+  () => refreshSearchAvailability()
+);
+
+watch(
+  () => productCache.products,
+  () => {
+    if (route.name !== "pos") return;
+    cartStore.syncLineStockFromCatalog((id) => productCache.products.find((p) => p.id === id));
+    refreshSearchAvailability();
+  },
+  { deep: true }
+);
+
 const lookupTerm = computed(() => currentLookupTerm());
+const scanDropdownOpen = computed(
+  () =>
+    lookupLoading.value ||
+    (lookupTerm.value.length > 0 &&
+      (searchResults.value.length > 0 || (!lookupLoading.value && lookupTerm.value.length > 0)))
+);
 const showPickList = computed(
   () => lookupLoading.value || (lookupTerm.value.length > 0 && searchResults.value.length > 0)
 );
@@ -132,41 +309,126 @@ const showPickEmpty = computed(
   () => !lookupLoading.value && lookupTerm.value.length > 0 && searchResults.value.length === 0
 );
 
-const itemColumns = [
-  { title: "Product", key: "products", render: (r) => r.products?.name, ellipsis: { tooltip: true } },
+function tabShortLabel(cart) {
+  const base = cart.label.replace(/\s*\(hold\)\s*/i, "").trim();
+  const m = base.match(/Sale\s+(\d+)/i);
+  const n = m ? m[1] : base.slice(0, 8);
+  const hold = cart.status === "on_hold" ? " · hold" : "";
+  const count = cart.items.length ? ` (${cart.items.length})` : "";
+  return `Sale ${n}${count}${hold}`;
+}
+
+function returnToScanField() {
+  searchResults.value = [];
+  selectedSearchIndex.value = -1;
+  scanBuffer.value = "";
+  focusRef(scanRef);
+}
+
+function enrichSearchResults(rows) {
+  const list = (rows ?? []).map((p) => {
+    const stock = Math.floor(Number(p.current_stock) || 0);
+    const available = cartStore.availableToAdd(p.id, stock);
+    return { ...p, pos_available: available, pos_in_stock: stock > 0 };
+  });
+  list.sort((a, b) => {
+    if (a.pos_available > 0 && b.pos_available <= 0) return -1;
+    if (a.pos_available <= 0 && b.pos_available > 0) return 1;
+    return 0;
+  });
+  return list;
+}
+
+function firstSelectableSearchIndex(list) {
+  const idx = (list ?? []).findIndex((p) => p.pos_available > 0);
+  return idx >= 0 ? idx : list?.length ? 0 : -1;
+}
+
+async function refreshPosCatalog() {
+  if (!supabaseConfigured) return;
+  try {
+    await refreshProductCatalog();
+    cartStore.syncLineStockFromCatalog((id) => productCache.products.find((p) => p.id === id));
+    if (lookupTerm.value.length > 0) scheduleLiveLookup();
+  } catch {
+    /* keep cached data */
+  }
+}
+
+function onCatalogVisibility() {
+  if (document.visibilityState === "visible" && route.name === "pos") {
+    refreshPosCatalog();
+  }
+}
+
+function onGlobalCatalogUpdated() {
+  if (route.name !== "pos") return;
+  cartStore.syncLineStockFromCatalog((id) => productCache.products.find((p) => p.id === id));
+  refreshSearchAvailability();
+}
+
+const itemColumns = computed(() => [
+  {
+    title: "Product",
+    key: "products",
+    render: (r) => h("span", { class: "pos-line-name" }, r.products?.name ?? "—"),
+    ellipsis: { tooltip: true },
+  },
+  {
+    title: "Avail.",
+    key: "avail",
+    width: 72,
+    align: "center",
+    render: (row) => {
+      const stock = row.products?.current_stock ?? 0;
+      const max = cartStore.maxQtyForLine(row, stock);
+      return h("span", { class: max <= 0 ? "pos-avail-warn" : "pos-avail-ok" }, String(max));
+    },
+  },
   { title: "Price", key: "unit_selling_price", width: 100, render: (r) => formatPkr(r.unit_selling_price) },
   {
     title: "Qty",
     key: "quantity",
     width: 150,
-    render: (row) =>
-      h(NSpace, { size: 4, align: "center" }, () => [
-        h(
-          NButton,
-          { size: "tiny", disabled: row.quantity <= 1, onClick: () => changeLineQty(row, row.quantity - 1) },
-          () => "−"
-        ),
-        h(NInputNumber, {
-          size: "small",
-          value: row.quantity,
-          min: 1,
-          max: row.products?.current_stock ?? 9999,
-          precision: 0,
-          style: "width: 72px",
-          onUpdateValue: (v) => {
-            if (v != null && v !== row.quantity) changeLineQty(row, v);
-          },
-        }),
-        h(
-          NButton,
-          {
-            size: "tiny",
-            disabled: row.quantity >= (row.products?.current_stock ?? 0),
-            onClick: () => changeLineQty(row, row.quantity + 1),
-          },
-          () => "+"
-        ),
-      ]),
+    render: (row) => {
+      const stock = row.products?.current_stock ?? 0;
+      const max = cartStore.maxQtyForLine(row, stock);
+      return h("div", { class: "pos-line-qty", "data-line-id": row.lineId }, [
+        h(NSpace, { size: 4, align: "center" }, () => [
+          h(
+            NButton,
+            { size: "tiny", disabled: row.quantity <= 1, onClick: () => changeLineQty(row, row.quantity - 1) },
+            () => "−"
+          ),
+          h(NInputNumber, {
+            size: "small",
+            value: row.quantity,
+            min: 1,
+            max: max > 0 ? max : 1,
+            precision: 0,
+            style: "width: 72px",
+            onUpdateValue: (v) => {
+              if (v != null && v !== row.quantity) changeLineQty(row, v);
+            },
+            onKeydown: (e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                returnToScanField();
+              }
+            },
+          }),
+          h(
+            NButton,
+            {
+              size: "tiny",
+              disabled: row.quantity >= max,
+              onClick: () => changeLineQty(row, row.quantity + 1),
+            },
+            () => "+"
+          ),
+        ]),
+      ]);
+    },
   },
   { title: "Line", key: "line_total", width: 100, render: (r) => formatPkr(r.line_total) },
   {
@@ -176,36 +438,67 @@ const itemColumns = [
     render: (row) =>
       h(NButton, { size: "tiny", type: "error", secondary: true, onClick: () => removeLine(row) }, () => "Remove"),
   },
-];
+]);
 
 function clearLookupUi() {
-  search.value = "";
   scanBuffer.value = "";
   searchResults.value = [];
   selectedSearchIndex.value = -1;
   focusRef(scanRef);
 }
 
-function addProduct(product) {
-  cartStore.addProduct(product);
-  clearLookupUi();
+function focusLineQty(lineId) {
+  if (!lineId) return;
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      const wrap = document.querySelector(`.pos-line-qty[data-line-id="${lineId}"]`);
+      const el = wrap?.querySelector("input");
+      if (el) {
+        el.focus();
+        el.select?.();
+      }
+    });
+  });
 }
+
+function addProduct(product) {
+  if (product?.pos_available != null && product.pos_available <= 0) {
+    message.warning("Out of stock for this tab (check other held tabs)");
+    return;
+  }
+  try {
+    const line = cartStore.addProduct(product);
+    clearLookupUi();
+    focusLineQty(line?.lineId);
+  } catch (e) {
+    message.error(e.message || "Cannot add to cart");
+  }
+}
+
+watch(focusQtyLineId, (id) => {
+  if (!id) return;
+  focusLineQty(id);
+  cartStore.clearFocusQtyLine();
+});
 
 async function addHighlightedSearchResult() {
   if (selectedSearchIndex.value < 0 || !searchResults.value.length) return false;
   const p = searchResults.value[selectedSearchIndex.value];
-  if (p) addProduct(p);
-  return Boolean(p);
+  if (!p) return false;
+  if (p.pos_available <= 0) {
+    message.warning("Out of stock for this tab");
+    return false;
+  }
+  addProduct(p);
+  return true;
 }
 
 function changeLineQty(row, qty) {
-  const stock = row.products?.current_stock ?? 0;
-  const next = Math.floor(Number(qty) || 1);
-  if (next > stock) {
-    message.error(`Only ${stock} in stock`);
-    return;
+  try {
+    cartStore.setLineQty(row.lineId, qty);
+  } catch (e) {
+    message.error(e.message || "Invalid quantity");
   }
-  cartStore.setLineQty(row.lineId, next);
 }
 
 function removeLine(row) {
@@ -213,27 +506,61 @@ function removeLine(row) {
 }
 
 function holdOrder() {
-  if (cartStore.holdActiveCart()) message.success("Order on hold (local)");
-  else message.warning("Cart is empty");
+  if (cartStore.holdActiveCart()) {
+    message.success("Tab on hold — its quantities stay reserved until you complete or clear that tab");
+  } else message.warning("Cart is empty");
 }
 
 function newOrder() {
   cartStore.newSaleTab();
+  cartStore.syncScheduledDiscount(activeScheduledPromo.value, subtotal.value);
 }
 
 function cancelCart() {
   cartStore.clearActiveCart();
+  cartStore.syncScheduledDiscount(activeScheduledPromo.value, subtotal.value);
+  cashReceived.value = 0;
   message.info("Cart cleared");
+  returnToScanField();
 }
 
-async function doSearch() {
-  activeLookupField.value = "search";
-  await runLiveLookup(search.value);
+function confirmClearCart() {
+  if (!items.value.length) {
+    cancelCart();
+    return;
+  }
+  dialog.warning({
+    title: "Clear cart?",
+    content: `Remove all ${items.value.length} line(s) from this tab?`,
+    positiveText: "Clear",
+    negativeText: "Cancel",
+    onPositiveClick: () => cancelCart(),
+  });
+}
+
+function requestCloseTab(cart) {
+  if (!cart.items.length) {
+    cartStore.removeCart(cart.id);
+    returnToScanField();
+    return;
+  }
+  dialog.warning({
+    title: "Close tab?",
+    content: `"${cart.label}" has ${cart.items.length} item(s). Close and discard this cart?`,
+    positiveText: "Close tab",
+    negativeText: "Cancel",
+    onPositiveClick: () => {
+      cartStore.removeCart(cart.id);
+      returnToScanField();
+    },
+  });
 }
 
 async function onScanEnter() {
   if (searchResults.value.length && selectedSearchIndex.value >= 0) {
-    addProduct(searchResults.value[selectedSearchIndex.value]);
+    const p = searchResults.value[selectedSearchIndex.value];
+    if (p?.pos_available > 0) addProduct(p);
+    else message.warning("Out of stock for this tab");
     return;
   }
   const code = scanBuffer.value.trim();
@@ -245,31 +572,25 @@ async function onScanEnter() {
     addProduct(product);
     return;
   }
-  if (searchResults.value.length === 1) {
+  if (searchResults.value.length === 1 && searchResults.value[0].pos_available > 0) {
     addProduct(searchResults.value[0]);
     return;
   }
   message.error("Not found — pick from list below or keep typing");
 }
 
-async function onSearchEnter(e) {
-  e?.preventDefault?.();
-  if (await addHighlightedSearchResult()) return;
-  await doSearch();
-}
-
 async function onLookupEnter(e) {
   e?.preventDefault?.();
   if (await addHighlightedSearchResult()) return;
-  if (activeLookupField.value === "scan") await onScanEnter();
-  else await doSearch();
+  await onScanEnter();
 }
 
 async function complete() {
   if (!items.value.length) return message.warning("Cart is empty");
   for (const line of items.value) {
-    if (line.quantity > line.products?.current_stock) {
-      return message.error(`Insufficient stock: ${line.products?.name}`);
+    const max = cartStore.maxQtyForLine(line, line.products?.current_stock ?? 0);
+    if (line.quantity > max) {
+      return message.error(`Insufficient stock: ${line.products?.name} (max ${max} now)`);
     }
   }
   completing.value = true;
@@ -285,7 +606,7 @@ async function complete() {
     receiptOpen.value = true;
     cashReceived.value = 0;
     cartStore.afterCompletedSale();
-    refreshProductCatalog().catch(() => {});
+    await refreshPosCatalog();
   } catch (e) {
     message.error(e.message);
   } finally {
@@ -293,8 +614,65 @@ async function complete() {
   }
 }
 
+function switchSaleTab(delta) {
+  cartStore.selectAdjacentCart(delta);
+  returnToScanField();
+}
+
+/** Sale tabs — Shift+F11/F12 (Windows steals Alt+Shift for keyboard layout). */
+function handleSaleTabSwitchKey(e) {
+  if (receiptOpen.value) return false;
+  const key = e.key;
+  const code = e.code;
+
+  if (e.shiftKey && !e.ctrlKey && !e.altKey && key === "F11") {
+    e.preventDefault();
+    e.stopPropagation();
+    switchSaleTab(-1);
+    return true;
+  }
+  if (e.shiftKey && !e.ctrlKey && !e.altKey && key === "F12") {
+    e.preventDefault();
+    e.stopPropagation();
+    switchSaleTab(1);
+    return true;
+  }
+
+  if (e.ctrlKey && e.shiftKey && !e.altKey) {
+    if (code === "BracketRight" || key === "]") {
+      e.preventDefault();
+      e.stopPropagation();
+      switchSaleTab(1);
+      return true;
+    }
+    if (code === "BracketLeft" || key === "[") {
+      e.preventDefault();
+      e.stopPropagation();
+      switchSaleTab(-1);
+      return true;
+    }
+  }
+  return false;
+}
+
 function onPosKeyDown(e) {
   const key = e.key;
+
+  if (handleSaleTabSwitchKey(e)) return;
+
+  if (key === "Tab" && !e.ctrlKey && !e.altKey && !receiptOpen.value) {
+    handlePosTabKey(e);
+    return;
+  }
+
+  if (key === "Enter") {
+    const active = document.activeElement;
+    if (active?.closest?.(".pos-line-qty")) {
+      e.preventDefault();
+      returnToScanField();
+      return;
+    }
+  }
 
   if (key === "Escape") {
     if (receiptOpen.value) {
@@ -312,20 +690,25 @@ function onPosKeyDown(e) {
 
   if (receiptOpen.value && (key === "p" || key === "P") && !shouldBlockShortcut(e)) {
     e.preventDefault();
-    if (receiptDetail.value) {
-      openReceiptPrintWindow(receiptDetail.value.sale, receiptDetail.value.items, receiptSettings.value);
-    }
+    if (receiptDetail.value) printSaleReceipt();
     return;
   }
 
   if (searchResults.value.length && (key === "ArrowDown" || key === "ArrowUp")) {
     const active = document.activeElement;
-    const inLookup = active?.closest?.(".pos-search-wrap") || active?.closest?.(".pos-scan-wrap");
+    const inLookup = active?.closest?.(".pos-scan-wrap");
     if (!inLookup) return;
     e.preventDefault();
     const n = searchResults.value.length;
-    if (key === "ArrowDown") selectedSearchIndex.value = (selectedSearchIndex.value + 1) % n;
-    else selectedSearchIndex.value = (selectedSearchIndex.value - 1 + n) % n;
+    let idx = selectedSearchIndex.value;
+    for (let step = 0; step < n; step++) {
+      if (key === "ArrowDown") idx = (idx + 1) % n;
+      else idx = (idx - 1 + n) % n;
+      if (searchResults.value[idx]?.pos_available > 0) {
+        selectedSearchIndex.value = idx;
+        break;
+      }
+    }
     return;
   }
 
@@ -339,6 +722,7 @@ function onPosKeyDown(e) {
     else if (key === "F7") holdOrder();
     else if (key === "F8") newOrder();
     else if (key === "F9") complete();
+    else if (key === "F10") confirmClearCart();
     return;
   }
 
@@ -356,14 +740,39 @@ function onPosKeyDown(e) {
   }
 }
 
+watch(
+  () => route.name,
+  (name) => {
+    if (name === "pos") {
+      refreshPosCatalog();
+      refreshScheduledPromoForPos();
+    }
+  }
+);
+
+watch(activeCartId, () => {
+  cartStore.syncScheduledDiscount(activeScheduledPromo.value, subtotal.value);
+});
+
+watch(subtotal, () => {
+  applyScheduledPromoToCart();
+});
+
 onMounted(() => {
-  window.addEventListener("keydown", onPosKeyDown);
+  layoutStore.applyRouteSidebar("pos");
+  window.addEventListener("keydown", onPosKeyDown, true);
+  document.addEventListener("visibilitychange", onCatalogVisibility);
+  window.addEventListener(PRODUCT_CATALOG_UPDATED, onGlobalCatalogUpdated);
   cartStore.init();
+  refreshPosCatalog();
+  refreshScheduledPromoForPos();
   focusRef(scanRef);
 });
 
 onUnmounted(() => {
-  window.removeEventListener("keydown", onPosKeyDown);
+  window.removeEventListener("keydown", onPosKeyDown, true);
+  document.removeEventListener("visibilitychange", onCatalogVisibility);
+  window.removeEventListener(PRODUCT_CATALOG_UPDATED, onGlobalCatalogUpdated);
   clearTimeout(lookupTimer);
 });
 </script>
@@ -372,98 +781,154 @@ onUnmounted(() => {
   <div>
     <h1 style="margin-top: 0">POS / New Sale</h1>
     <p class="pos-hint">
-      Cart is instant (no save until <strong>Complete sale</strong>). <kbd>F9</kbd> checkout ·
-      <kbd>F7</kbd> hold tab locally
+      <kbd>F7</kbd> hold tab (park sale locally; qty stays reserved in other tabs) ·
+      <kbd>F9</kbd> checkout · <kbd>F8</kbd> new tab · <kbd>F10</kbd> clear cart ·
+      <kbd>Tab</kbd> scan → filter → discount → cash ·
+      <kbd>Shift+F12</kbd> / <kbd>Shift+F11</kbd> next / prev sale tab · Enter on qty → scan
     </p>
     <SupabaseRequiredAlert />
-    <NGrid cols="1 l:3" :x-gap="16">
-      <NGi>
-        <NCard title="Tabs (local)" size="small">
-          <NSpace vertical style="width: 100%">
-            <NButton block type="primary" @click="newOrder">New tab (F8)</NButton>
-            <div v-for="c in carts" :key="c.id">
-              <NButton
-                block
-                :type="c.id === activeCartId ? 'primary' : 'default'"
-                @click="cartStore.selectCart(c.id)"
-              >
-                {{ c.label }}
-                <NTag size="tiny" style="margin-left: 6px">{{ c.status }}</NTag>
-                <span v-if="c.items.length" style="margin-left: 6px">({{ c.items.length }})</span>
-              </NButton>
-            </div>
-          </NSpace>
-        </NCard>
-      </NGi>
-      <NGi :span="2">
-        <NCard title="Cart" size="small">
-          <NSpace style="margin-bottom: 12px" vertical>
-            <div class="pos-scan-wrap">
-              <NInput
-                ref="scanRef"
-                v-model:value="scanBuffer"
-                placeholder="Scan or type barcode / name (F2) — list updates as you type"
-                @focus="activeLookupField = 'scan'; scheduleLiveLookup()"
-                @keydown.enter="onLookupEnter"
-              />
-            </div>
-            <NSpace class="pos-search-wrap">
-              <NInput
-                ref="searchRef"
-                v-model:value="search"
-                placeholder="Search name, SKU, ID (F3)"
-                @focus="activeLookupField = 'search'; scheduleLiveLookup()"
-                @keydown.enter="onSearchEnter"
-              />
-              <NButton @click="doSearch">Search</NButton>
-            </NSpace>
-            <div v-if="lookupLoading" class="pos-pick-list">
-              <NSpin size="small" />
-              <NText depth="3" style="margin-left: 8px">Searching…</NText>
-            </div>
-            <div v-else-if="showPickEmpty" class="pos-pick-list pos-pick-empty">
-              <NText depth="3">No matching products</NText>
-            </div>
-            <NSpace v-else-if="showPickList && searchResults.length" class="pos-pick-list" vertical>
-              <NButton
-                v-for="(p, idx) in searchResults"
-                :key="p.id"
-                block
-                :type="idx === selectedSearchIndex ? 'primary' : 'secondary'"
-                @click.stop="addProduct(p)"
-              >
-                <span class="pick-line">
-                  <span>{{ p.name }}</span>
-                  <span class="pick-meta">
-                    {{ formatPkr(p.selling_price) }} · stock {{ p.current_stock }}
-                    <template v-if="p.barcode"> · {{ p.barcode }}</template>
-                  </span>
+    <NCard size="small" class="pos-card">
+      <div class="pos-tabs-row">
+        <div
+          v-for="c in carts"
+          :key="c.id"
+          class="pos-tab-chip"
+          :class="{
+            'pos-tab-chip--active': c.id === activeCartId,
+            'pos-tab-chip--hold': c.status === 'on_hold',
+          }"
+        >
+          <button type="button" class="pos-tab-label" @click="cartStore.selectCart(c.id)">
+            {{ tabShortLabel(c) }}
+          </button>
+          <button
+            type="button"
+            class="pos-tab-close"
+            title="Close tab"
+            aria-label="Close tab"
+            @click.stop="requestCloseTab(c)"
+          >
+            ×
+          </button>
+        </div>
+        <NButton size="small" quaternary class="pos-tab-new" @click="newOrder">+ New (F8)</NButton>
+        <span class="pos-tab-shortcut-hint">Shift+F11 / F12 = prev / next tab</span>
+      </div>
+
+      <div
+        class="pos-scan-wrap"
+        :class="{ 'pos-scan-wrap--open': scanDropdownOpen }"
+      >
+        <NInput
+          ref="scanRef"
+          v-model:value="scanBuffer"
+          placeholder="Scan or type barcode / name (F2) — list updates as you type"
+          @focus="scheduleLiveLookup()"
+          @keydown.enter="onLookupEnter"
+        />
+        <div v-if="scanDropdownOpen" class="pos-pick-panel" role="listbox">
+          <div v-if="lookupLoading" class="pos-pick-list pos-pick-status">
+            <NSpin size="small" />
+            <NText depth="3" style="margin-left: 8px">Searching catalog…</NText>
+          </div>
+          <div v-else-if="showPickEmpty" class="pos-pick-list pos-pick-empty">
+            <NText depth="3">No matching products in catalog</NText>
+          </div>
+          <div v-else-if="showPickList && searchResults.length" class="pos-pick-list">
+            <button
+              v-for="(p, idx) in searchResults"
+              :key="p.id"
+              type="button"
+              class="pos-pick-item"
+              :class="{
+                'pos-pick-item--active': idx === selectedSearchIndex,
+                'pos-pick-item--disabled': p.pos_available <= 0,
+              }"
+              :disabled="p.pos_available <= 0"
+              @click.stop="addProduct(p)"
+            >
+              <span class="pick-line">
+                <span>{{ p.name }}</span>
+                <span class="pick-meta">
+                  {{ formatPkr(p.selling_price) }} ·
+                  <template v-if="p.pos_available > 0">{{ p.pos_available }} left for this tab</template>
+                  <template v-else>Out of stock for tabs ({{ p.current_stock }} in store)</template>
+                  <template v-if="p.barcode"> · {{ p.barcode }}</template>
                 </span>
-              </NButton>
-            </NSpace>
-          </NSpace>
-          <NDataTable :row-key="(row) => row.lineId" :columns="itemColumns" :data="items" size="small" />
-          <NSpace style="margin-top: 16px" vertical>
-            <div>Subtotal: <strong>{{ formatPkr(subtotal) }}</strong></div>
-            <div>
-              Discount (F4):
-              <NInputNumber ref="discountRef" v-model:value="discount" :min="0" style="width: 140px" />
-            </div>
-            <div>Total: <strong>{{ formatPkr(total) }}</strong></div>
-            <div>
-              Cash (F5 / F6=total):
-              <NInputNumber ref="cashRef" v-model:value="cashReceived" :min="0" style="width: 140px" />
-            </div>
-            <div>Change: <strong>{{ formatPkr(changeDue) }}</strong></div>
-          </NSpace>
-          <NSpace style="margin-top: 16px">
-            <NButton @click="holdOrder">Hold tab</NButton>
-            <NButton type="primary" :loading="completing" @click="complete">Complete sale (F9)</NButton>
-            <NButton type="warning" @click="cancelCart">Clear cart</NButton>
-          </NSpace>
-        </NCard>
-      </NGi>
-    </NGrid>
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="pos-cart-filter pos-search-wrap">
+        <NSpace align="center" :size="8" style="width: 100%">
+          <NInput
+            ref="searchRef"
+            v-model:value="cartFilter"
+            clearable
+            placeholder="Filter cart lines — name, SKU, barcode (F3)"
+            style="flex: 1"
+          />
+          <ClearFiltersButton :disabled="!hasCartLineFilter" @clear="clearCartLineFilter" />
+        </NSpace>
+      </div>
+
+      <NDataTable
+        class="pos-table"
+        :row-key="(row) => row.lineId"
+        :columns="itemColumns"
+        :data="displayItems"
+        :row-class-name="() => 'pos-cart-row'"
+        size="medium"
+        striped
+      />
+
+      <div class="pos-checkout">
+        <div v-if="scheduledPromoOnCart" class="pos-scheduled-promo">
+          <span>
+            Auto discount:
+            <strong>{{ scheduledPromoOnCart.name || "Scheduled sale" }}</strong>
+            {{ scheduledPromoBannerText }}
+          </span>
+          <NButton
+            size="tiny"
+            quaternary
+            class="pos-scheduled-promo-remove"
+            @click="removeScheduledPromoFromSale"
+          >
+            Remove from this sale
+          </NButton>
+        </div>
+        <div class="pos-totals">
+          <div class="pos-totals-row">
+            <span>Subtotal</span>
+            <strong>{{ formatPkr(subtotal) }}</strong>
+          </div>
+          <div class="pos-totals-row">
+            <span>Discount <span class="pos-kbd-hint">(F4)</span></span>
+            <NInputNumber ref="discountRef" v-model:value="discount" :min="0" class="pos-num-input" />
+          </div>
+          <div class="pos-totals-row pos-totals-row--emph">
+            <span>Total</span>
+            <strong>{{ formatPkr(total) }}</strong>
+          </div>
+          <div class="pos-totals-row">
+            <span>Cash <span class="pos-kbd-hint">(F5 · F6=total)</span></span>
+            <NInputNumber ref="cashRef" v-model:value="cashReceived" :min="0" class="pos-num-input" />
+          </div>
+          <div class="pos-totals-row">
+            <span>Change</span>
+            <strong>{{ formatPkr(changeDue) }}</strong>
+          </div>
+        </div>
+        <NSpace class="pos-actions" justify="end">
+          <NButton @click="holdOrder">Hold tab (F7)</NButton>
+          <NButton type="warning" @click="confirmClearCart">Clear cart (F10)</NButton>
+          <NButton type="primary" :loading="completing" @click="complete">Complete sale (F9)</NButton>
+        </NSpace>
+      </div>
+    </NCard>
 
     <NModal v-model:show="receiptOpen" preset="card" title="Receipt" style="width: min(480px, 96vw)">
       <ReceiptPreview
@@ -474,15 +939,7 @@ onUnmounted(() => {
       />
       <NSpace v-if="receiptDetail" style="margin-top: 12px" justify="end">
         <NButton @click="receiptOpen = false">Close</NButton>
-        <NButton
-          type="primary"
-          @click="
-            openReceiptPrintWindow(receiptDetail.sale, receiptDetail.items, receiptSettings) ||
-              message.warning('Allow pop-ups to print')
-          "
-        >
-          Print
-        </NButton>
+        <NButton type="primary" :loading="receiptPrinting" @click="printSaleReceipt">Print</NButton>
       </NSpace>
     </NModal>
   </div>
@@ -502,17 +959,244 @@ onUnmounted(() => {
   border: 1px solid #9ca3af;
   border-radius: 4px;
 }
+.pos-card {
+  max-width: 100%;
+}
+.pos-tabs-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin-bottom: 12px;
+  scrollbar-width: thin;
+}
+.pos-tab-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.pos-tab-label {
+  border: none;
+  background: transparent;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pos-tab-close {
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 10px 6px 6px;
+  cursor: pointer;
+}
+.pos-tab-close:hover {
+  color: #dc2626;
+  background: #fef2f2;
+}
+.pos-tab-chip:hover {
+  border-color: #0f766e;
+}
+.pos-tab-chip--active {
+  background: #0f766e;
+  border-color: #0f766e;
+}
+.pos-tab-chip--active .pos-tab-label {
+  color: #fff;
+}
+.pos-tab-chip--active .pos-tab-close {
+  color: rgba(255, 255, 255, 0.85);
+}
+.pos-tab-chip--active .pos-tab-close:hover {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.15);
+}
+.pos-tab-chip--hold:not(.pos-tab-chip--active) {
+  border-style: dashed;
+}
+.pos-tab-chip--hold:not(.pos-tab-chip--active) .pos-tab-label {
+  color: #b45309;
+}
+.pos-tab-new {
+  flex-shrink: 0;
+}
+.pos-tab-shortcut-hint {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 11px;
+  color: #9ca3af;
+  white-space: nowrap;
+  margin-left: 4px;
+}
+.pos-scan-wrap {
+  position: relative;
+  margin-bottom: 10px;
+  z-index: 20;
+}
+.pos-scan-wrap--open :deep(.n-input .n-input-wrapper) {
+  border-color: #0f766e !important;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.22);
+}
+.pos-pick-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 2px);
+  z-index: 30;
+  border: 2px solid #0f766e;
+  border-radius: 0 0 10px 10px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(15, 118, 110, 0.22);
+}
 .pos-pick-list {
   max-height: 280px;
   overflow-y: auto;
-  padding: 8px;
-  background: #f3f4f6;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
 }
+.pos-pick-status,
 .pos-pick-empty {
+  padding: 14px 16px;
   text-align: center;
-  padding: 16px;
+}
+.pos-pick-item {
+  display: block;
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+  padding: 10px 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.pos-pick-item:last-child {
+  border-bottom: none;
+}
+.pos-pick-item:hover,
+.pos-pick-item--active {
+  background: #ecfdf5;
+}
+.pos-pick-item--active {
+  box-shadow: inset 3px 0 0 #0f766e;
+}
+.pos-pick-item--disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+  background: #f9fafb;
+}
+.pos-pick-item--disabled .pick-meta {
+  color: #b45309;
+}
+.pos-avail-ok {
+  font-weight: 700;
+  color: #0f766e;
+}
+.pos-avail-warn {
+  font-weight: 700;
+  color: #dc2626;
+}
+.pos-cart-filter {
+  margin-bottom: 12px;
+  max-width: 420px;
+}
+.pos-table {
+  margin-bottom: 8px;
+}
+.pos-table :deep(.pos-cart-row td) {
+  padding-top: 14px !important;
+  padding-bottom: 14px !important;
+  font-size: 15px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.pos-table :deep(.pos-cart-row:hover td) {
+  background: #f0fdfa !important;
+}
+.pos-table :deep(.pos-line-name) {
+  font-weight: 700;
+  color: #111827;
+  font-size: 15px;
+}
+.pos-table :deep(.n-data-table-th) {
+  font-weight: 700;
+  background: #f3f4f6;
+}
+.pos-scheduled-promo {
+  width: min(480px, 100%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fde68a;
+  border: 1px solid #d97706;
+  font-size: 13px;
+  color: #78350f;
+}
+.pos-scheduled-promo strong {
+  color: #451a03;
+}
+.pos-scheduled-promo-remove {
+  font-weight: 700 !important;
+  --n-text-color: #111827 !important;
+  --n-text-color-hover: #000000 !important;
+  --n-text-color-pressed: #000000 !important;
+  --n-text-color-focus: #111827 !important;
+}
+.pos-scheduled-promo-remove :deep(.n-button__content) {
+  font-weight: 700;
+  color: #111827;
+}
+.pos-checkout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+.pos-totals {
+  width: min(340px, 100%);
+}
+.pos-totals-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0;
+  font-size: 14px;
+  color: #4b5563;
+}
+.pos-totals-row--emph {
+  font-size: 1.05rem;
+  color: #111827;
+  border-top: 1px dashed #e5e7eb;
+  border-bottom: 1px dashed #e5e7eb;
+  margin: 4px 0;
+  padding: 10px 0;
+}
+.pos-totals-row strong {
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+}
+.pos-num-input {
+  width: 140px;
+}
+.pos-kbd-hint {
+  font-size: 11px;
+  color: #9ca3af;
+}
+.pos-actions {
+  width: 100%;
+  flex-wrap: wrap;
 }
 .pick-line {
   display: flex;

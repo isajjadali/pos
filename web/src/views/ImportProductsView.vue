@@ -17,8 +17,6 @@ import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { parseCsv, rowsToObjects, IMPORT_FIELD_OPTIONS, SAMPLE_CSV } from "../utils/csv.js";
 import { importProductsBulk, recordImportJob } from "../services/importProducts.js";
-import { refreshProductCatalog } from "../services/productCatalog.js";
-
 const message = useMessage();
 const step = ref(1);
 const headers = ref([]);
@@ -31,13 +29,17 @@ const results = ref([]);
 
 const systemFields = IMPORT_FIELD_OPTIONS.filter((f) => f.value !== "skip");
 
-const previewRows = computed(() =>
-  records.value.slice(0, 20).map((r) => mapRecord(r))
-);
+const previewRows = computed(() => records.value.map((r) => mapRecord(r)));
 
-const columns = computed(() =>
-  systemFields.map((f) => ({ title: f.label, key: f.value }))
-);
+const columns = computed(() => [
+  {
+    title: "#",
+    key: "_n",
+    width: 48,
+    render: (_r, i) => i + 1,
+  },
+  ...systemFields.map((f) => ({ title: f.label, key: f.value })),
+]);
 
 function mapRecord(raw) {
   const out = {};
@@ -105,7 +107,6 @@ async function runImport() {
       success,
       failed,
     });
-    await refreshProductCatalog().catch(() => {});
     step.value = 4;
     message.success(`Import done: ${success} ok, ${failed} failed`);
   } catch (e) {
@@ -159,8 +160,8 @@ async function runImport() {
           <NRadio value="skip">Skip row</NRadio>
         </NSpace>
       </NRadioGroup>
-      <h3>Preview (first 20 rows)</h3>
-      <NDataTable :columns="columns" :data="previewRows" :max-height="300" />
+      <h3>Preview ({{ previewRows.length }} rows)</h3>
+      <NDataTable :columns="columns" :data="previewRows" :max-height="480" :scroll-x="900" />
       <NSpace style="margin-top: 16px">
         <NButton :loading="importing" type="primary" @click="runImport">
           Confirm import

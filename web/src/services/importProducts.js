@@ -1,8 +1,10 @@
 import { requireSupabase } from "../lib/supabase.js";
-import { createProduct } from "./products.js";
+import { createProduct, nextExternalProductId } from "./products.js";
 import { receiveStock } from "./inventory.js";
 import { createVendor, listActiveVendorOptions } from "./vendors.js";
 import { createCategory, listCategories } from "./categories.js";
+import { toTitleCase } from "../utils/titleCase.js";
+import { refreshProductCatalog } from "./productCatalog.js";
 
 export async function findProductMatch(row) {
   const sb = requireSupabase();
@@ -46,7 +48,7 @@ async function ensureCategory(name) {
  * behavior: create | add_stock | update_info | skip
  */
 export async function importRow(mapped, behavior) {
-  const name = String(mapped.name ?? "").trim();
+  const name = toTitleCase(mapped.name);
   if (!name) throw new Error("Product name required");
 
   const qty = Math.max(0, Math.floor(Number(mapped.quantity) || 0));
@@ -82,12 +84,19 @@ export async function importRow(mapped, behavior) {
     return { action: "duplicate", productId: existing.id };
   }
 
-  const vendorId = await ensureVendor(mapped.vendor);
+  const vendorName = toTitleCase(mapped.vendor);
+  const vendorId = await ensureVendor(vendorName);
   const categoryId = await ensureCategory(mapped.category);
+
+  let externalId = String(mapped.external_product_id ?? "").trim() || null;
+  if (!externalId && vendorName) {
+    externalId = await nextExternalProductId(vendorName);
+  }
 
   const id = await createProduct({
     name,
-    external_product_id: mapped.external_product_id,
+    external_product_id: externalId,
+    vendor_name: vendorName,
     sku: mapped.sku,
     barcode: mapped.barcode,
     vendor_id: vendorId,
@@ -154,6 +163,8 @@ export async function importProductsBulk(mappedRows, behavior, { onProgress } = 
       });
     }
   }
+
+  await refreshProductCatalog().catch(() => {});
 
   return {
     results: allResults,

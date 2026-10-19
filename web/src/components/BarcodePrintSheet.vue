@@ -40,9 +40,10 @@ onMounted(() => {
       class="label"
       :style="{ width: `${widthMm}mm`, minHeight: `${heightMm}mm` }"
     >
+      <div class="store">Dollar World by WABz</div>
       <div class="name">{{ label.name }}</div>
       <svg :id="`bc-${index}`" class="barcode"></svg>
-      <div class="meta">ID: {{ label.barcode }}</div>
+      <div class="meta">{{ label.barcode }}</div>
       <div class="price">{{ formatPkr(label.price) }}</div>
     </div>
   </div>
@@ -78,17 +79,28 @@ onMounted(() => {
     box-sizing: border-box;
     font-family: Arial, sans-serif;
   }
+  .store {
+    font-size: 10pt;
+    font-weight: bold;
+    margin-bottom: 0.5mm;
+  }
   .name {
-    font-size: 9pt;
+    font-size: 11pt;
     font-weight: bold;
     margin-bottom: 1mm;
+    line-height: 1.2;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    max-height: 14mm;
+    overflow: hidden;
   }
   .barcode {
     width: 100%;
     max-height: 14mm;
   }
   .meta {
-    font-size: 7pt;
+    font-size: 10pt;
+    font-weight: bold;
   }
   .price {
     font-size: 11pt;

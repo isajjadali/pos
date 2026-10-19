@@ -14,11 +14,12 @@ export const useAuthStore = defineStore("auth", () => {
 
   const role = computed(() => {
     if (!supabaseConfigured) return "admin";
-    return profile.value?.role ?? "sales";
+    if (!profileLoaded.value) return null;
+    return String(profile.value?.role ?? "sales").toLowerCase();
   });
 
   const isAdmin = computed(() => !supabaseConfigured || role.value === "admin");
-  const isSales = computed(() => supabaseConfigured && role.value === "sales");
+  const isSales = computed(() => supabaseConfigured && profileLoaded.value && role.value === "sales");
   const displayName = computed(
     () => profile.value?.full_name || user.value?.email || "Staff"
   );

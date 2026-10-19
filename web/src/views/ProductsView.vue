@@ -17,6 +17,8 @@ import {
   useMessage,
   useDialog,
 } from "naive-ui";
+import ClearFiltersButton from "../components/ClearFiltersButton.vue";
+import ProductBulkCreateModal from "../components/ProductBulkCreateModal.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { formatPkr, marginPercent } from "../utils/format.js";
@@ -29,12 +31,17 @@ import {
   deactivateProduct,
   deleteProductsBulk,
   deactivateProductsBulk,
+  nextExternalProductId,
 } from "../services/products.js";
-import { receiveStock } from "../services/inventory.js";
-import { computePerPiecePrice } from "../utils/perPiece.js";
+import { receiveStock, setProductStock } from "../services/inventory.js";
 import { shouldBlockShortcut } from "../utils/hotkeys.js";
 import { refreshProductCatalog } from "../services/productCatalog.js";
 import { usePermissions } from "../composables/usePermissions.js";
+import { rowNumberColumn, tableSorter, compareStrings } from "../utils/tableColumns.js";
+import { toTitleCase } from "../utils/titleCase.js";
+import { formatProductTagLabel, normalizeProductTags } from "../utils/productTags.js";
+import { isProductTagsDbReady, listProductTagOptions } from "../services/productTags.js";
+import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -45,12 +52,59 @@ const rows = ref([]);
 const total = ref(0);
 const page = ref(1);
 const pageSize = ref(20);
+const sortKey = ref(null);
+const sortOrder = ref(null);
 const search = ref("");
 const vendorFilter = ref(null);
 const categoryFilter = ref(null);
+const tagFilter = ref(null);
+const tagOptions = ref([]);
+const tagsDbReady = ref(false);
 const lowStockOnly = ref(false);
 const activeOnly = ref(true);
+const hasActiveFilters = computed(
+  () =>
+    Boolean(search.value.trim()) ||
+    vendorFilter.value != null ||
+    categoryFilter.value != null ||
+    (tagsDbReady.value && tagFilter.value != null) ||
+    lowStockOnly.value ||
+    !activeOnly.value
+);
+function clearFilters() {
+  search.value = "";
+  vendorFilter.value = null;
+  categoryFilter.value = null;
+  tagFilter.value = null;
+  lowStockOnly.value = false;
+  activeOnly.value = true;
+  sortKey.value = null;
+  sortOrder.value = null;
+  page.value = 1;
+}
 const checkedRowKeys = ref([]);
+
+let loadFromQuery = () => {};
+const { routeSyncing } = useRouteQuerySync(
+  {
+    q: { ...routeQuery.string(search), debounceMs: 300 },
+    page: routeQuery.positiveInt(page, 1),
+    pageSize: routeQuery.positiveInt(pageSize, 20),
+    vendor: routeQuery.optionalString(vendorFilter),
+    category: routeQuery.optionalString(categoryFilter),
+    tag: routeQuery.optionalString(tagFilter),
+    lowStock: routeQuery.booleanFlag(lowStockOnly, false),
+    active: {
+      ref: activeOnly,
+      default: true,
+      parse: (s) => s !== "all",
+      serialize: (v) => (v ? undefined : "all"),
+    },
+    sort: routeQuery.optionalString(sortKey),
+    order: routeQuery.optionalString(sortOrder),
+  },
+  { onApplied: () => loadFromQuery() }
+);
 const searchInputRef = ref(null);
 
 const vendorOptions = ref([]);
@@ -58,6 +112,7 @@ const categoryOptions = ref([]);
 const newCategoryName = ref("");
 
 const showModal = ref(false);
+const showBulkCreate = ref(false);
 const editing = ref(null);
 const saving = ref(false);
 const isCreate = computed(() => !editing.value?.id);
@@ -77,12 +132,28 @@ function emptyForm() {
     selling_price: 0,
     weighted_avg_cost: 0,
     current_stock: 0,
+    stock_at_open: 0,
     low_stock_threshold: 5,
     is_active: true,
+    tags: [],
     add_stock_qty: 0,
     add_stock_unit_cost: 0,
   };
 }
+
+const suggestedTagOptions = [
+  { label: "Missing", value: "missing" },
+  { label: "Pending Vendor", value: "pending vendor" },
+  { label: "Damaged", value: "damaged" },
+  { label: "Recall", value: "recall" },
+];
+
+const tagSelectOptions = computed(() => {
+  const map = new Map();
+  for (const o of suggestedTagOptions) map.set(o.value, o);
+  for (const o of tagOptions.value) map.set(o.value, { label: formatProductTagLabel(o.value), value: o.value });
+  return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+});
 
 const belowCost = computed(() => {
   const s = Number(form.value.selling_price);
@@ -118,22 +189,45 @@ function stockTagProps(row) {
 }
 
 const columns = computed(() => {
-  const cols = [];
+  const cols = [rowNumberColumn(page, pageSize)];
   if (canManageProducts.value) cols.push({ type: "selection" });
   cols.push(
     {
       title: "ID",
       key: "external_product_id",
       width: 90,
+      ...tableSorter("string", "external_product_id"),
       render: (row) => row.external_product_id || "—",
     },
-    { title: "Name", key: "name", ellipsis: { tooltip: true } },
-    { title: "Barcode", key: "barcode", width: 120 },
+    { title: "Name", key: "name", ellipsis: { tooltip: true }, ...tableSorter("string", "name") },
+    {
+      title: "Tags",
+      key: "tags",
+      width: 160,
+      render: (row) => {
+        const tags = row.tags ?? [];
+        if (!tags.length) return "—";
+        return h(
+          NSpace,
+          { size: 4, wrap: true },
+          () =>
+            tags.map((t) =>
+              h(
+                NTag,
+                { size: "small", round: true, bordered: false, type: t === "missing" ? "warning" : "default" },
+                () => formatProductTagLabel(t)
+              )
+            )
+        );
+      },
+    },
+    { title: "Barcode", key: "barcode", width: 120, ...tableSorter("string", "barcode") },
     {
       title: "Stock",
       key: "current_stock",
       width: 88,
       align: "center",
+      ...tableSorter("number", "current_stock"),
       render: (row) =>
         h(
           NTag,
@@ -151,16 +245,8 @@ const columns = computed(() => {
         title: "Purchase",
         key: "weighted_avg_cost",
         width: 100,
+        ...tableSorter("number", "weighted_avg_cost"),
         render: (row) => formatPkr(row.weighted_avg_cost),
-      },
-      {
-        title: "Per piece",
-        key: "per_piece_price",
-        width: 100,
-        render: (row) => {
-          const per = computePerPiecePrice(row.weighted_avg_cost, row.name);
-          return per != null ? formatPkr(per) : "—";
-        },
       }
     );
   }
@@ -168,6 +254,7 @@ const columns = computed(() => {
     title: "Sale",
     key: "selling_price",
     width: 100,
+    ...tableSorter("number", "selling_price"),
     render: (row) => formatPkr(row.selling_price),
   });
   if (canManageProducts.value) {
@@ -176,12 +263,14 @@ const columns = computed(() => {
         title: "Vendor",
         key: "vendor",
         width: 120,
+        ...tableSorter("string", (a, b) => compareStrings(a.vendors?.name, b.vendors?.name)),
         render: (row) => row.vendors?.name || "—",
       },
       {
         title: "Status",
         key: "is_active",
         width: 90,
+        ...tableSorter("boolean", "is_active"),
         render: (row) =>
           h(NTag, { type: row.is_active ? "success" : "default", size: "small" }, () =>
             row.is_active ? "Active" : "Inactive"
@@ -218,6 +307,12 @@ async function loadMeta() {
     label: c.name,
     value: c.id,
   }));
+  tagsDbReady.value = await isProductTagsDbReady();
+  try {
+    tagOptions.value = tagsDbReady.value ? await listProductTagOptions() : [];
+  } catch {
+    tagOptions.value = [];
+  }
 }
 
 async function reloadTableAndCatalog() {
@@ -235,8 +330,11 @@ async function load() {
       categoryId: categoryFilter.value,
       lowStockOnly: lowStockOnly.value,
       activeOnly: activeOnly.value,
+      tag: tagFilter.value,
       page: page.value,
       pageSize: pageSize.value,
+      sortKey: sortKey.value,
+      sortOrder: sortOrder.value,
     });
     rows.value = res.rows;
     total.value = res.total;
@@ -246,6 +344,30 @@ async function load() {
     loading.value = false;
   }
 }
+
+async function refreshSuggestedProductId() {
+  if (!isCreate.value) return;
+  const vendorId = form.value.vendor_id;
+  if (!vendorId) {
+    form.value.external_product_id = "";
+    return;
+  }
+  const opt = vendorOptions.value.find((o) => o.value === vendorId);
+  const name = opt?.label || "";
+  if (!name) return;
+  try {
+    form.value.external_product_id = await nextExternalProductId(name);
+  } catch (e) {
+    message.warning(e.message || "Could not generate product ID");
+  }
+}
+
+watch(
+  () => form.value.vendor_id,
+  () => {
+    if (showModal.value && isCreate.value) refreshSuggestedProductId();
+  }
+);
 
 function openCreate() {
   editing.value = null;
@@ -267,8 +389,10 @@ function openEdit(row) {
     selling_price: row.selling_price,
     weighted_avg_cost: row.weighted_avg_cost,
     current_stock: row.current_stock,
+    stock_at_open: row.current_stock,
     low_stock_threshold: row.low_stock_threshold,
     is_active: row.is_active,
+    tags: [...(row.tags ?? [])],
     add_stock_qty: 0,
     add_stock_unit_cost: row.weighted_avg_cost ?? 0,
   };
@@ -337,6 +461,12 @@ function confirmDeactivate(row) {
   });
 }
 
+function onCreateTag(label) {
+  const value = normalizeProductTags([label])[0];
+  if (!value) return false;
+  return { label: formatProductTagLabel(value), value };
+}
+
 async function addCategory() {
   if (!newCategoryName.value.trim()) return;
   try {
@@ -352,17 +482,30 @@ async function addCategory() {
 
 async function save() {
   if (!supabaseConfigured) return;
+  form.value.name = toTitleCase(form.value.name);
   if (!form.value.name.trim()) {
     message.warning("Product name is required");
     return;
   }
+  if (isCreate.value && !form.value.external_product_id?.trim()) {
+    await refreshSuggestedProductId();
+  }
+  form.value.tags = normalizeProductTags(form.value.tags);
   saving.value = true;
   try {
     if (isCreate.value) {
-      await createProduct(form.value);
+      const vendorName = vendorOptions.value.find((o) => o.value === form.value.vendor_id)?.label;
+      await createProduct({ ...form.value, vendor_name: vendorName });
       message.success("Product created");
     } else {
       await updateProduct(editing.value.id, form.value);
+      const stockNow = Math.floor(Number(form.value.current_stock) || 0);
+      const stockWas = Math.floor(Number(form.value.stock_at_open) || 0);
+      let stockMsg = "";
+      if (stockNow !== stockWas) {
+        await setProductStock(editing.value.id, stockNow);
+        stockMsg = ` Stock set to ${stockNow}.`;
+      }
       const addQty = Math.floor(Number(form.value.add_stock_qty) || 0);
       if (addQty > 0) {
         await receiveStock({
@@ -372,12 +515,13 @@ async function save() {
           vendorId: form.value.vendor_id,
           notes: "Stock added from product edit",
         });
-        message.success("Product updated and stock received");
+        message.success(`Product updated.${stockMsg} Received ${addQty} more unit(s).`);
       } else {
-        message.success("Product updated");
+        message.success(`Product updated.${stockMsg || ""}`.trim());
       }
     }
     showModal.value = false;
+    await loadMeta();
     await load();
   } catch (e) {
     message.error(e.message || "Save failed");
@@ -386,30 +530,43 @@ async function save() {
   }
 }
 
+function onTableSorterUpdate(sorter) {
+  sortKey.value = sorter?.columnKey ?? null;
+  sortOrder.value = sorter?.order ?? null;
+  page.value = 1;
+}
+
 function onPageChange(p) {
   page.value = p;
-  load();
 }
 
 function onPageSizeChange(s) {
   pageSize.value = s;
   page.value = 1;
-  load();
 }
 
-watch([vendorFilter, categoryFilter, lowStockOnly, activeOnly], () => {
+watch([vendorFilter, categoryFilter, tagFilter, lowStockOnly, activeOnly], () => {
+  if (routeSyncing.value) return;
   page.value = 1;
   load();
 });
 
 let searchTimer;
 watch(search, () => {
+  if (routeSyncing.value) return;
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     page.value = 1;
     load();
   }, 300);
 });
+
+watch([page, pageSize, sortKey, sortOrder], () => {
+  if (routeSyncing.value) return;
+  load();
+});
+
+loadFromQuery = load;
 
 function onProductsKeyDown(e) {
   if (showModal.value) return;
@@ -458,7 +615,8 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
         :options="vendorOptions"
         placeholder="Vendor"
         clearable
-        style="width: 180px"
+        filterable
+        style="width: 200px"
       />
       <NSelect
         v-model:value="categoryFilter"
@@ -466,6 +624,15 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
         placeholder="Category"
         clearable
         style="width: 160px"
+      />
+      <NSelect
+        v-if="tagsDbReady"
+        v-model:value="tagFilter"
+        :options="tagOptions"
+        placeholder="Tag"
+        clearable
+        filterable
+        style="width: 200px"
       />
       <NSwitch v-model:value="lowStockOnly">
         <template #checked>Low stock</template>
@@ -475,6 +642,7 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
         <template #checked>Active only</template>
         <template #unchecked>Include inactive</template>
       </NSwitch>
+      <ClearFiltersButton :disabled="!hasActiveFilters" @clear="clearFilters" />
       <NButton
         v-if="canManageProducts"
         type="primary"
@@ -482,6 +650,13 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
         @click="openCreate"
       >
         Add product
+      </NButton>
+      <NButton
+        v-if="canManageProducts"
+        :disabled="!supabaseConfigured"
+        @click="showBulkCreate = true"
+      >
+        Bulk create
       </NButton>
       <NButton
         v-if="canManageProducts"
@@ -506,14 +681,16 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
       :loading="loading"
       :columns="columns"
       :data="rows"
-      :scroll-x="1250"
+      :scroll-x="1420"
+      :remote="true"
+      @update:sorter="onTableSorterUpdate"
       :pagination="{
         page,
         pageSize,
         itemCount: total,
         showSizePicker: true,
-        pageSizes: [10, 20, 50],
-        onChange: onPageChange,
+        pageSizes: [10, 20, 50, 100],
+        onUpdatePage: onPageChange,
         onUpdatePageSize: onPageSizeChange,
       }"
     />
@@ -522,71 +699,91 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
       v-model:show="showModal"
       preset="card"
       :title="isCreate ? 'Add product' : 'Edit product'"
-      style="width: 560px; max-width: 95vw"
+      style="width: min(920px, 96vw)"
     >
       <NAlert v-if="belowCost" type="warning" style="margin-bottom: 12px">
         Selling price is below purchase cost.
       </NAlert>
-      <NForm label-placement="top">
-        <NFormItem label="Product ID (shop code, e.g. AR-1)">
-          <NInput v-model:value="form.external_product_id" placeholder="Optional" />
+      <NForm label-placement="top" class="product-form-grid">
+        <NFormItem label="Vendor" class="span-2">
+          <NSelect
+            v-model:value="form.vendor_id"
+            :options="vendorOptions"
+            clearable
+            filterable
+            :placeholder="isCreate ? 'Select vendor (sets Product ID)' : 'Vendor'"
+          />
         </NFormItem>
-        <NFormItem label="Product name" required>
-          <NInput v-model:value="form.name" />
+        <NFormItem label="Product ID">
+          <NInput
+            v-model:value="form.external_product_id"
+            :disabled="isCreate"
+            :placeholder="isCreate ? 'Auto from vendor' : ''"
+          />
         </NFormItem>
-        <NSpace>
-          <NFormItem label="SKU" style="flex: 1">
-            <NInput v-model:value="form.sku" />
-          </NFormItem>
-          <NFormItem label="Barcode" style="flex: 1">
-            <NInput v-model:value="form.barcode" :placeholder="isCreate ? 'Auto-generated if empty' : ''" />
-          </NFormItem>
-        </NSpace>
-        <NFormItem label="Vendor">
-          <NSelect v-model:value="form.vendor_id" :options="vendorOptions" clearable filterable />
+        <NFormItem label="Product name" required class="span-3">
+          <NInput v-model:value="form.name" placeholder="Title Case on save" />
+        </NFormItem>
+        <NFormItem label="SKU">
+          <NInput v-model:value="form.sku" />
+        </NFormItem>
+        <NFormItem label="Barcode">
+          <NInput v-model:value="form.barcode" :placeholder="isCreate ? 'Auto if empty' : ''" />
         </NFormItem>
         <NFormItem label="Category">
-          <NSpace vertical style="width: 100%">
-            <NSelect v-model:value="form.category_id" :options="categoryOptions" clearable filterable />
-            <NSpace>
-              <NInput v-model:value="newCategoryName" placeholder="New category name" style="flex: 1" />
-              <NButton :disabled="!newCategoryName.trim()" @click="addCategory">Add</NButton>
-            </NSpace>
+          <NSelect v-model:value="form.category_id" :options="categoryOptions" clearable filterable />
+        </NFormItem>
+        <NFormItem v-if="canManageProducts && tagsDbReady" label="Tags" class="span-3">
+          <NSelect
+            v-model:value="form.tags"
+            :options="tagSelectOptions"
+            multiple
+            filterable
+            tag
+            placeholder="Type a tag and press Enter (e.g. missing)"
+            :on-create="onCreateTag"
+          />
+        </NFormItem>
+        <NFormItem label="New category" class="span-3">
+          <NSpace style="width: 100%">
+            <NInput v-model:value="newCategoryName" placeholder="New category name" style="flex: 1" />
+            <NButton :disabled="!newCategoryName.trim()" @click="addCategory">Add</NButton>
           </NSpace>
         </NFormItem>
         <template v-if="isCreate">
           <NFormItem label="Initial quantity">
             <NInputNumber v-model:value="form.initial_qty" :min="0" :precision="0" style="width: 100%" />
           </NFormItem>
-          <NFormItem label="Purchase price (per unit) PKR">
+          <NFormItem label="Purchase price (PKR)">
             <NInputNumber v-model:value="form.purchase_price" :min="0" style="width: 100%" />
+          </NFormItem>
+          <NFormItem label="Selling price (PKR)">
+            <NInputNumber v-model:value="form.selling_price" :min="0" style="width: 100%" />
           </NFormItem>
         </template>
         <template v-else>
-          <NFormItem label="Current stock (read-only)">
-            <NInputNumber :value="form.current_stock" disabled style="width: 100%" />
-            <NText depth="3" style="font-size: 12px; display: block; margin-top: 4px">
-              Stock is changed via receipts — use “Add stock” below or Inventory → Receive stock.
-            </NText>
+          <NFormItem label="Stock quantity">
+            <NInputNumber v-model:value="form.current_stock" :min="0" :precision="0" style="width: 100%" />
           </NFormItem>
-          <NSpace style="width: 100%">
-            <NFormItem label="Add stock (qty)" style="flex: 1">
-              <NInputNumber v-model:value="form.add_stock_qty" :min="0" :precision="0" style="width: 100%" />
-            </NFormItem>
-            <NFormItem label="Cost per unit for new qty (PKR)" style="flex: 1">
-              <NInputNumber v-model:value="form.add_stock_unit_cost" :min="0" style="width: 100%" />
-            </NFormItem>
-          </NSpace>
+          <NFormItem label="Add stock (qty)">
+            <NInputNumber v-model:value="form.add_stock_qty" :min="0" :precision="0" style="width: 100%" />
+          </NFormItem>
+          <NFormItem label="Cost / new qty (PKR)">
+            <NInputNumber v-model:value="form.add_stock_unit_cost" :min="0" style="width: 100%" />
+          </NFormItem>
           <NFormItem label="Avg purchase cost (PKR)">
             <NInputNumber v-model:value="form.weighted_avg_cost" :min="0" style="width: 100%" />
           </NFormItem>
+          <NFormItem label="Selling price (PKR)">
+            <NInputNumber v-model:value="form.selling_price" :min="0" style="width: 100%" />
+          </NFormItem>
+          <NFormItem
+            v-if="marginPercent(form.selling_price, form.weighted_avg_cost) !== null"
+            label="Gross margin"
+          >
+            <span>{{ marginPercent(form.selling_price, form.weighted_avg_cost) }}%</span>
+          </NFormItem>
         </template>
-        <NFormItem label="Selling price PKR">
-          <NInputNumber v-model:value="form.selling_price" :min="0" style="width: 100%" />
-        </NFormItem>
-        <NFormItem v-if="!isCreate && marginPercent(form.selling_price, form.weighted_avg_cost) !== null" label="Gross margin">
-          <span>{{ marginPercent(form.selling_price, form.weighted_avg_cost) }}%</span>
-        </NFormItem>
         <NFormItem label="Low-stock threshold">
           <NInputNumber v-model:value="form.low_stock_threshold" :min="0" :precision="0" style="width: 100%" />
         </NFormItem>
@@ -594,6 +791,10 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
           <NSwitch v-model:value="form.is_active" />
         </NFormItem>
       </NForm>
+      <NText v-if="!isCreate" depth="3" style="font-size: 12px; display: block; margin-top: 4px">
+        Set <strong>Stock quantity</strong> to fix on-hand count (logged in Inventory). Use <strong>Add stock</strong> for
+        new purchases on top of that.
+      </NText>
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showModal = false">Cancel</NButton>
@@ -601,5 +802,38 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
         </NSpace>
       </template>
     </NModal>
+
+    <ProductBulkCreateModal
+      v-model:show="showBulkCreate"
+      :vendor-options="vendorOptions"
+      :category-options="categoryOptions"
+      @created="reloadTableAndCatalog"
+    />
   </div>
 </template>
+
+<style scoped>
+.product-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px 16px;
+}
+.product-form-grid :deep(.n-form-item) {
+  margin-bottom: 8px;
+}
+.span-2 {
+  grid-column: span 2;
+}
+.span-3 {
+  grid-column: span 3;
+}
+@media (max-width: 720px) {
+  .product-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .span-2,
+  .span-3 {
+    grid-column: span 1;
+  }
+}
+</style>
