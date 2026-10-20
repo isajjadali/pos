@@ -2,7 +2,7 @@ import { requireSupabase } from "../lib/supabase.js";
 import { refreshProductCatalog } from "./productCatalog.js";
 
 const LIST_FIELDS =
-  "id, name, external_product_id, selling_price, weighted_avg_cost, current_stock, vendor_id, is_active";
+  "id, name, external_product_id, selling_price, weighted_avg_cost, current_stock, vendor_id, is_active, pieces_per_pack, pieces_per_box, piece_selling_price, pack_selling_price, box_selling_price, default_sale_unit";
 
 /** Money key for grouping (2 decimal places). */
 export function priceGroupKey(price) {
@@ -23,17 +23,24 @@ export async function listProductsForPriceGroups({ activeOnly = true } = {}) {
 }
 
 /**
- * Bulk set selling prices.
- * @param {Array<{ id: string, selling_price: number }>} updates
+ * Bulk set selling prices (primary unit + catalog selling_price).
+ * @param {Array<{ id: string, selling_price: number, target_unit?: 'piece'|'pack'|'box' }>} updates
  */
 export async function bulkUpdateSellingPrices(updates) {
   const sb = requireSupabase();
   const payload = (updates ?? [])
     .filter((u) => u?.id)
-    .map((u) => ({
-      id: u.id,
-      selling_price: Math.max(0, Number(u.selling_price) || 0),
-    }));
+    .map((u) => {
+      const row = {
+        id: u.id,
+        selling_price: Math.max(0, Number(u.selling_price) || 0),
+      };
+      const unit = String(u.target_unit || "").toLowerCase();
+      if (unit === "piece" || unit === "pack" || unit === "box") {
+        row.target_unit = unit;
+      }
+      return row;
+    });
   if (!payload.length) return { updated: 0 };
 
   const chunkSize = 200;

@@ -7,6 +7,7 @@ import {
   NSpace,
   NInput,
   NInputNumber,
+  NSelect,
   NDataTable,
   NCard,
   NModal,
@@ -47,6 +48,13 @@ import {
   computeLineScheduledDiscountPkr,
   lineMatchesPromo,
 } from "../utils/scheduledDiscount.js";
+import {
+  availableUnitsOf,
+  defaultPosSaleUnit,
+  formatProductUnitPrices,
+  piecesPerPackOf,
+  resolveSaleUnit,
+} from "../utils/saleUnits.js";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -84,11 +92,43 @@ async function printSaleReceipt() {
     );
     if (res.warning) message.warning(res.warning);
     else message.success(`Receipt sent to ${res.printerName || "printer"}`);
+    receiptOpen.value = false;
   } catch (e) {
     message.error(e.message || "Receipt print failed");
   } finally {
     receiptPrinting.value = false;
   }
+}
+
+function receiptConfirmOpen() {
+  return Boolean(document.querySelector(".n-dialog"));
+}
+
+function requestCloseReceipt() {
+  if (!receiptOpen.value || receiptConfirmOpen()) return;
+  // Defer past the current Escape keyup/keydown so the confirm is not auto-dismissed.
+  window.setTimeout(() => {
+    if (!receiptOpen.value || receiptConfirmOpen()) return;
+    dialog.warning({
+      title: "Close receipt?",
+      content: "Close without printing? You can still open this sale from Sales history.",
+      positiveText: "Close",
+      negativeText: "Stay",
+      closeOnEsc: false,
+      maskClosable: false,
+      onPositiveClick: () => {
+        receiptOpen.value = false;
+      },
+    });
+  }, 0);
+}
+
+function onReceiptModalUpdate(show) {
+  if (show) {
+    receiptOpen.value = true;
+    return;
+  }
+  requestCloseReceipt();
 }
 const scanRef = ref(null);
 const searchRef = ref(null);
@@ -286,7 +326,12 @@ watch(searchResults, (list) => {
 });
 
 watch(
-  () => carts.value.map((c) => c.items.map((l) => `${l.product_id}:${l.quantity}`).join(",")).join("|"),
+  () =>
+    carts.value
+      .map((c) =>
+        c.items.map((l) => `${l.product_id}:${l.sale_unit}:${l.quantity}:${l.pieces_per_unit}`).join(",")
+      )
+      .join("|"),
   () => refreshSearchAvailability()
 );
 
@@ -330,11 +375,22 @@ function returnToScanField() {
   focusRef(scanRef);
 }
 
+function productPriceHint(p) {
+  return formatProductUnitPrices(p);
+}
+
 function enrichSearchResults(rows) {
   const list = (rows ?? []).map((p) => {
     const stock = Math.floor(Number(p.current_stock) || 0);
-    const available = cartStore.availableToAdd(p.id, stock);
-    return { ...p, pos_available: available, pos_in_stock: stock > 0 };
+    const resolved = resolveSaleUnit(p, defaultPosSaleUnit(p));
+    const available = cartStore.availableToAdd(p.id, stock, resolved.pieces_per_unit);
+    return {
+      ...p,
+      pos_available: available,
+      pos_in_stock: stock > 0,
+      pos_unit: resolved.sale_unit,
+      pos_price_hint: productPriceHint(p),
+    };
   });
   list.sort((a, b) => {
     if (a.pos_available > 0 && b.pos_available <= 0) return -1;
@@ -384,7 +440,34 @@ const itemColumns = computed(() => [
       return h("span", { class: max <= 0 ? "pos-avail-warn" : "pos-avail-ok" }, String(max));
     },
   },
-  { title: "Price", key: "unit_selling_price", width: 88, render: (r) => formatPkr(r.unit_selling_price) },
+  {
+    title: "Unit",
+    key: "sale_unit",
+    width: 118,
+    render: (row) => {
+      const opts = availableUnitsOf(row.products || row);
+      return h(NSelect, {
+        size: "tiny",
+        value: row.sale_unit || "piece",
+        options: opts,
+        consistentMenuWidth: false,
+        style: "width: 108px",
+        onUpdateValue: (v) => {
+          try {
+            cartStore.setLineSaleUnit(row.lineId, v);
+          } catch (e) {
+            message.error(e.message || "Cannot change unit");
+          }
+        },
+      });
+    },
+  },
+  {
+    title: "Price",
+    key: "unit_selling_price",
+    width: 88,
+    render: (r) => formatPkr(r.unit_selling_price),
+  },
   {
     title: "Disc.",
     key: "line_discount",
@@ -610,6 +693,19 @@ async function complete() {
       return message.error(`Insufficient stock: ${line.products?.name} (max ${max} now)`);
     }
   }
+  const received = Number(cashReceived.value);
+  if (!Number.isFinite(received) || received <= 0) {
+    message.warning("Enter cash received before completing the sale");
+    focusRef(cashRef);
+    return;
+  }
+  if (received + 1e-9 < total.value) {
+    message.warning(
+      `Cash received (${formatPkr(received)}) is less than total (${formatPkr(total.value)})`
+    );
+    focusRef(cashRef);
+    return;
+  }
   completing.value = true;
   try {
     const saleId = await completeSaleFromCart(cartStore.linesForCheckout(), {
@@ -683,6 +779,11 @@ function onPosKeyDown(e) {
   }
 
   if (key === "Enter") {
+    if (receiptOpen.value && !receiptConfirmOpen()) {
+      e.preventDefault();
+      if (receiptDetail.value) printSaleReceipt();
+      return;
+    }
     const active = document.activeElement;
     if (active?.closest?.(".pos-line-qty")) {
       e.preventDefault();
@@ -694,7 +795,9 @@ function onPosKeyDown(e) {
   if (key === "Escape") {
     if (receiptOpen.value) {
       e.preventDefault();
-      receiptOpen.value = false;
+      e.stopPropagation();
+      if (receiptConfirmOpen()) return;
+      requestCloseReceipt();
       return;
     }
     if (searchResults.value.length) {
@@ -865,9 +968,11 @@ onUnmounted(() => {
               <span class="pick-line">
                 <span>{{ p.name }}</span>
                 <span class="pick-meta">
-                  {{ formatPkr(p.selling_price) }} ·
-                  <template v-if="p.pos_available > 0">{{ p.pos_available }} left for this tab</template>
-                  <template v-else>Out of stock for tabs ({{ p.current_stock }} in store)</template>
+                  {{ p.pos_price_hint || formatPkr(p.selling_price) }} ·
+                  <template v-if="p.pos_available > 0"
+                    >{{ p.pos_available }} {{ p.pos_unit || "unit" }}(s) left</template
+                  >
+                  <template v-else>Out of stock for tabs ({{ p.current_stock }} pcs in store)</template>
                   <template v-if="p.barcode"> · {{ p.barcode }}</template>
                 </span>
               </span>
@@ -901,7 +1006,7 @@ onUnmounted(() => {
         }"
         size="medium"
         striped
-        :scroll-x="720"
+        :scroll-x="820"
       />
 
       <div class="pos-checkout">
@@ -950,7 +1055,15 @@ onUnmounted(() => {
       </div>
     </NCard>
 
-    <NModal v-model:show="receiptOpen" preset="card" title="Receipt" style="width: min(480px, 96vw)">
+    <NModal
+      :show="receiptOpen"
+      preset="card"
+      title="Receipt"
+      style="width: min(480px, 96vw)"
+      :mask-closable="false"
+      :close-on-esc="false"
+      @update:show="onReceiptModalUpdate"
+    >
       <ReceiptPreview
         v-if="receiptDetail"
         :sale="receiptDetail.sale"
@@ -958,8 +1071,10 @@ onUnmounted(() => {
         :settings="receiptSettings"
       />
       <NSpace v-if="receiptDetail" style="margin-top: 12px" justify="end">
-        <NButton @click="receiptOpen = false">Close</NButton>
-        <NButton type="primary" :loading="receiptPrinting" @click="printSaleReceipt">Print</NButton>
+        <NButton @click="requestCloseReceipt">Close</NButton>
+        <NButton type="primary" :loading="receiptPrinting" @click="printSaleReceipt">
+          Print (Enter)
+        </NButton>
       </NSpace>
     </NModal>
   </div>

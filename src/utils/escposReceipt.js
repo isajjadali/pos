@@ -46,6 +46,25 @@ function wrapName(name, cols) {
   return lines;
 }
 
+/** Map px font size → ESC/POS GS ! n. Body default 13 → 1×. */
+function escPosBodySize(fontSize) {
+  const fs = Number(fontSize) || 13;
+  if (fs <= 14) return 0x00;
+  if (fs <= 16) return 0x01; // double height
+  return 0x11; // double width + height
+}
+
+/** Title default 17 → double width+height (previous title look). */
+function escPosTitleSize(fontSize) {
+  const fs = Number(fontSize) || 17;
+  if (fs <= 14) return 0x01;
+  return 0x11;
+}
+
+function escPosFooterSize(fontSize) {
+  return escPosBodySize(fontSize);
+}
+
 export function buildPlainTextReceipt(sale, items, settingsInput, { paperMm = 80 } = {}) {
   const vm = buildReceiptViewModel(sale, items, settingsInput);
   const cols = paperMm <= 58 ? COLS_58 : COLS_3IN;
@@ -59,7 +78,7 @@ export function buildPlainTextReceipt(sale, items, settingsInput, { paperMm = 80
 
   for (const item of vm.lines) {
     for (const nl of wrapName(item.name, cols)) lines.push(nl);
-    const left = `${item.qty} x ${money(item.unitPrice)}`;
+    const left = `${item.qty} x ${Math.round(Number(item.unitPrice) || 0)}`;
     lines.push(padLine(left, money(item.lineTotal), cols));
   }
 
@@ -116,9 +135,13 @@ export function buildEscPosReceipt(sale, items, settingsInput, { paperMm = 80 } 
   // Init
   push(0x1b, 0x40);
   push(0x1d, 0x7c, 0x0e); // darker density
+  // Thermal printers only have Font A/B; CSS font choice ≈ A. Size maps from settings.
+  const bodySize = escPosBodySize(vm.settings.receipt_font_size);
+  const titleSize = escPosTitleSize(vm.settings.receipt_title_font_size);
+  const footerSize = escPosFooterSize(vm.settings.receipt_footer_font_size);
   push(0x1b, 0x4d, 0x00); // Font A (12×24) — not compressed Font B
   push(0x1b, 0x20, 0x00);
-  push(0x1d, 0x21, 0x00);
+  push(0x1d, 0x21, bodySize);
 
   blank(EDGE_LINES);
 
@@ -132,17 +155,16 @@ export function buildEscPosReceipt(sale, items, settingsInput, { paperMm = 80 } 
   push(0x1b, 0x4d, 0x00); // Font A
   push(0x1b, 0x45, 0x01); // bold
   push(0x1b, 0x20, 0x02); // slight letter spacing (less compressed)
-  // Double width + double height (0x11) — big open title
-  push(0x1d, 0x21, 0x11);
+  push(0x1d, 0x21, titleSize);
   line(titleMain);
-  push(0x1d, 0x21, 0x00);
+  push(0x1d, 0x21, bodySize);
   push(0x1b, 0x20, 0x00);
 
   if (titleSub) {
     push(0x1b, 0x45, 0x01);
-    push(0x1d, 0x21, 0x01); // double height only for "by WABz"
+    push(0x1d, 0x21, titleSize === 0x11 ? 0x01 : bodySize);
     line(titleSub);
-    push(0x1d, 0x21, 0x00);
+    push(0x1d, 0x21, bodySize);
   }
   push(0x1b, 0x45, 0x00);
 
@@ -159,7 +181,7 @@ export function buildEscPosReceipt(sale, items, settingsInput, { paperMm = 80 } 
       line(nl);
       push(0x1b, 0x45, 0x00);
     }
-    const left = `${item.qty} x ${money(item.unitPrice)}`;
+    const left = `${item.qty} x ${Math.round(Number(item.unitPrice) || 0)}`;
     line(padLine(left, money(item.lineTotal), cols));
   }
 
@@ -179,12 +201,14 @@ export function buildEscPosReceipt(sale, items, settingsInput, { paperMm = 80 } 
   }
 
   if (vm.footer) {
+    push(0x1d, 0x21, footerSize);
     for (const fl of String(vm.footer).split(/\r?\n/)) {
       if (!fl.trim()) continue;
       push(0x1b, 0x61, 0x01);
       line(fl);
       push(0x1b, 0x61, 0x00);
     }
+    push(0x1d, 0x21, bodySize);
   }
 
   // Match top margin

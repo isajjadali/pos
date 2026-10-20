@@ -2,6 +2,7 @@ import { requireSupabase } from "../lib/supabase.js";
 import { refreshProductCatalog } from "./productCatalog.js";
 import { toTitleCase, vendorInitialsPrefix } from "../utils/titleCase.js";
 import { isProductTagsDbReady, setProductTags, TAGS_MIGRATION_HINT } from "./productTags.js";
+import { normalizeProductUnitFields } from "../utils/saleUnits.js";
 
 async function syncCatalog() {
   try {
@@ -29,6 +30,7 @@ export async function listProducts({
   lowStockOnly = false,
   activeOnly = false,
   tag = null,
+  unitFilter = "all",
   page = 1,
   pageSize = 20,
   sortKey = null,
@@ -64,6 +66,11 @@ export async function listProducts({
   if (categoryId) query = query.eq("category_id", categoryId);
   if (activeOnly) query = query.eq("is_active", true);
   if (lowStockOnly) query = query.eq("is_low_stock", true);
+  const uf = String(unitFilter || "all");
+  if (uf === "pack") query = query.gt("pieces_per_pack", 1);
+  else if (uf === "box") query = query.not("pieces_per_box", "is", null);
+  else if (uf === "piece") query = query.eq("pieces_per_pack", 1).is("pieces_per_box", null);
+  else if (uf === "multi") query = query.or("pieces_per_pack.gt.1,pieces_per_box.not.is.null");
   const tagNorm = String(tag ?? "").trim().toLowerCase();
   if (tagNorm) {
     if (!(await isProductTagsDbReady())) {
@@ -134,15 +141,23 @@ export async function createProductsBulk(rows, { vendorId, vendorName, categoryI
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     try {
+      const pack = Math.max(1, Math.floor(Number(row.pieces_per_pack) || 1));
+      const sale = Number(row.selling_price) || 0;
       const id = await createProduct({
         name: row.name,
         external_product_id: row.id_source === "custom" ? row.resolved_external_product_id : "",
         vendor_id: vendorId,
         vendor_name: vendorName,
         category_id: categoryId || null,
-        selling_price: row.selling_price,
+        selling_price: sale,
         purchase_price: row.purchase_price,
         initial_qty: row.initial_qty,
+        pieces_per_pack: pack,
+        pieces_per_box: row.pieces_per_box,
+        piece_selling_price: row.piece_selling_price ?? sale,
+        pack_selling_price: row.pack_selling_price ?? sale,
+        box_selling_price: row.box_selling_price,
+        default_sale_unit: row.default_sale_unit || (pack > 1 ? "pack" : "piece"),
       });
       created.push({ index: i, productId: id, name: row.name });
     } catch (e) {
@@ -161,6 +176,7 @@ export async function createProduct(payload) {
     const { data: v } = await sb.from("vendors").select("name").eq("id", payload.vendor_id).maybeSingle();
     if (v?.name) externalId = await nextExternalProductId(v.name);
   }
+  const units = normalizeProductUnitFields(payload);
   const { data, error } = await sb.rpc("create_product_with_initial_stock", {
     p_name: toTitleCase(payload.name),
     p_external_product_id: externalId,
@@ -168,10 +184,16 @@ export async function createProduct(payload) {
     p_barcode: payload.barcode?.trim() || null,
     p_category_id: payload.category_id || null,
     p_vendor_id: payload.vendor_id || null,
-    p_selling_price: Number(payload.selling_price) || 0,
+    p_selling_price: units.selling_price,
     p_purchase_price: Number(payload.purchase_price) || 0,
     p_initial_qty: Math.max(0, Math.floor(Number(payload.initial_qty) || 0)),
     p_low_stock_threshold: Math.max(0, Math.floor(Number(payload.low_stock_threshold) || 5)),
+    p_pieces_per_pack: units.pieces_per_pack,
+    p_pieces_per_box: units.pieces_per_box,
+    p_piece_selling_price: units.piece_selling_price,
+    p_pack_selling_price: units.pack_selling_price,
+    p_box_selling_price: units.box_selling_price,
+    p_default_sale_unit: units.default_sale_unit,
   });
   if (error) throw error;
   const productId = data;
@@ -184,7 +206,7 @@ export async function createProduct(payload) {
 
 export async function updateProduct(id, payload) {
   const sb = requireSupabase();
-  const selling = Number(payload.selling_price);
+  const units = normalizeProductUnitFields(payload);
   const cost = Number(payload.weighted_avg_cost);
   const row = {
     name: toTitleCase(payload.name),
@@ -193,7 +215,13 @@ export async function updateProduct(id, payload) {
     barcode: payload.barcode?.trim() || null,
     category_id: payload.category_id || null,
     vendor_id: payload.vendor_id || null,
-    selling_price: Number.isFinite(selling) ? selling : 0,
+    selling_price: units.selling_price,
+    pieces_per_pack: units.pieces_per_pack,
+    pieces_per_box: units.pieces_per_box,
+    piece_selling_price: units.piece_selling_price,
+    pack_selling_price: units.pack_selling_price,
+    box_selling_price: units.box_selling_price,
+    default_sale_unit: units.default_sale_unit,
     weighted_avg_cost: Number.isFinite(cost) ? cost : 0,
     low_stock_threshold: Math.max(0, Math.floor(Number(payload.low_stock_threshold) || 5)),
     is_active: Boolean(payload.is_active),
@@ -246,7 +274,7 @@ export async function updateProductsBulk(rows, { vendorId = undefined, categoryI
     }
     try {
       const sb = requireSupabase();
-      const selling = Number(row.selling_price);
+      const units = normalizeProductUnitFields(row);
       const cost = Number(row.purchase_price ?? row.weighted_avg_cost);
       const payload = {
         name,
@@ -259,7 +287,13 @@ export async function updateProductsBulk(rows, { vendorId = undefined, categoryI
             : row.category_id || null,
         vendor_id:
           vendorId !== undefined && vendorId !== null ? vendorId : row.vendor_id || null,
-        selling_price: Number.isFinite(selling) ? selling : 0,
+        selling_price: units.selling_price,
+        pieces_per_pack: units.pieces_per_pack,
+        pieces_per_box: units.pieces_per_box,
+        piece_selling_price: units.piece_selling_price,
+        pack_selling_price: units.pack_selling_price,
+        box_selling_price: units.box_selling_price,
+        default_sale_unit: units.default_sale_unit,
         weighted_avg_cost: Number.isFinite(cost) ? cost : 0,
         low_stock_threshold: Math.max(0, Math.floor(Number(row.low_stock_threshold) || 5)),
         is_active: row.is_active !== false,

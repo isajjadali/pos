@@ -35,6 +35,7 @@ import {
   deleteScheduledSaleDiscount,
 } from "../services/scheduledDiscounts.js";
 import { useProductCacheStore, refreshProductCatalog } from "../stores/productCache.js";
+import { fitNameColumnWidth } from "../utils/tableColumns.js";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -133,11 +134,23 @@ function statusLabel(row) {
   return "Active now";
 }
 
-const columns = [
-  { title: "Name", key: "name", render: (r) => r.name || "—" },
+const nameColumnWidth = computed(() => fitNameColumnWidth(rows.value));
+const tableScrollX = computed(
+  () => nameColumnWidth.value + 120 + 200 + 160 + 100 + 140 + 24
+);
+
+const columns = computed(() => [
+  {
+    title: "Name",
+    key: "name",
+    width: nameColumnWidth.value,
+    ellipsis: { tooltip: true },
+    render: (r) => r.name || "—",
+  },
   {
     title: "Discount",
     key: "discount",
+    width: 120,
     render: (r) => {
       if (scheduledPromoUsesPercent(r)) {
         const amt = Number(r.discount_amount) > 0 ? ` (PKR ignored)` : "";
@@ -149,11 +162,12 @@ const columns = [
   {
     title: "Applies to",
     key: "scope",
+    width: 200,
     ellipsis: { tooltip: true },
     render: (r) => formatScheduledPromoScope(r, formatPkr),
   },
-  { title: "Dates", key: "dates", render: (r) => formatRange(r) },
-  { title: "Status", key: "status", render: (r) => statusLabel(r) },
+  { title: "Dates", key: "dates", width: 160, render: (r) => formatRange(r) },
+  { title: "Status", key: "status", width: 100, render: (r) => statusLabel(r) },
   {
     title: "",
     key: "actions",
@@ -172,7 +186,7 @@ const columns = [
         ),
       ]),
   },
-];
+]);
 
 function openCreate() {
   editingId.value = null;
@@ -299,7 +313,7 @@ onMounted(async () => {
         :loading="loading"
         size="small"
         :bordered="false"
-        :scroll-x="780"
+        :scroll-x="tableScrollX"
       />
     </div>
 

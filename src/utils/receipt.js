@@ -1,4 +1,13 @@
 import { formatPkr } from "./format.js";
+import {
+  DEFAULT_RECEIPT_FONT_FAMILY,
+  normalizeReceiptBodyFontSize,
+  normalizeReceiptFontFamily,
+  normalizeReceiptFooterFontSize,
+  normalizeReceiptTitleFontSize,
+  receiptFontStack,
+} from "../config/printFonts.js";
+import { formatSaleLineName } from "./saleUnits.js";
 
 export const SAMPLE_RECEIPT_SALE = {
   sale_reference: "S20261015-00421",
@@ -29,13 +38,23 @@ export const SAMPLE_RECEIPT_ITEMS = [
 ];
 
 export function normalizeReceiptSettings(raw = {}) {
+  const body = normalizeReceiptBodyFontSize(raw.receipt_font_size);
   return {
     store_name: raw.store_name?.trim() || "Discount World by WABz",
     receipt_header: raw.receipt_header?.trim() || "",
     receipt_footer: raw.receipt_footer?.trim() || "",
     currency_code: raw.currency_code || "PKR",
     receipt_paper_width: clamp(Number(raw.receipt_paper_width) || 300, 240, 400),
-    receipt_font_size: clamp(Number(raw.receipt_font_size) || 13, 10, 18),
+    receipt_font_size: body,
+    receipt_title_font_size: normalizeReceiptTitleFontSize(
+      raw.receipt_title_font_size ?? body + 4
+    ),
+    receipt_footer_font_size: normalizeReceiptFooterFontSize(
+      raw.receipt_footer_font_size ?? Math.max(8, body - 1)
+    ),
+    receipt_font_family: normalizeReceiptFontFamily(
+      raw.receipt_font_family ?? DEFAULT_RECEIPT_FONT_FAMILY
+    ),
     receipt_show_change: raw.receipt_show_change !== false,
     receipt_show_payment: raw.receipt_show_payment !== false,
   };
@@ -70,10 +89,16 @@ export function buildReceiptViewModel(sale, items, settingsInput) {
     reference: sale?.sale_reference || "—",
     dateLabel: completedAt.toLocaleString(),
     lines: list.map((i) => ({
-      name: i.product_name_snapshot || i.name || "Item",
+      name: formatSaleLineName(
+        i.product_name_snapshot || i.name || "Item",
+        i.sale_unit,
+        i.pieces_per_unit
+      ),
       qty: Number(i.quantity) || 0,
       unitPrice: Number(i.unit_selling_price) || 0,
       lineTotal: Number(i.line_total) || 0,
+      saleUnit: i.sale_unit || "piece",
+      piecesPerUnit: Math.max(1, Math.floor(Number(i.pieces_per_unit) || 1)),
     })),
     subtotal,
     discount,
@@ -93,7 +118,7 @@ export function receiptPaperStyle(settingsInput) {
     width: `${s.receipt_paper_width}px`,
     maxWidth: "100%",
     fontSize: `${s.receipt_font_size}px`,
-    fontFamily: '"Consolas", "Courier New", monospace',
+    fontFamily: receiptFontStack(s.receipt_font_family),
     lineHeight: "1.45",
     color: "#111827",
     background: "#fff",
@@ -109,12 +134,15 @@ export function buildReceiptPrintHtml(sale, items, settingsInput) {
   const s = vm.settings;
   const w = s.receipt_paper_width;
   const fs = s.receipt_font_size;
+  const titleFs = s.receipt_title_font_size;
+  const footerFs = s.receipt_footer_font_size;
+  const ff = receiptFontStack(s.receipt_font_family);
 
   const lineRows = vm.lines
     .map((line) => {
       const qtyPart =
         line.qty > 1
-          ? ` <span class="muted">· ${line.qty}×${formatPkr(line.unitPrice)}</span>`
+          ? ` <span class="muted">· ${line.qty} x ${Math.round(Number(line.unitPrice) || 0)}</span>`
           : "";
       return `<div class="item">
         <span class="item-left"><span class="item-name">${escapeHtml(line.name)}</span>${qtyPart}</span>
@@ -142,24 +170,32 @@ export function buildReceiptPrintHtml(sale, items, settingsInput) {
 <html><head><meta charset="utf-8"/><title>Receipt ${escapeHtml(vm.reference)}</title>
 <style>
   @page { margin: 4mm; }
-  body { margin: 0; padding: 8px; font-family: Consolas, "Courier New", monospace; font-size: ${fs}px; color: #111; }
+  body { margin: 0; padding: 8px; font-family: ${ff}; font-size: ${fs}px; color: #111; }
   .paper { width: ${w}px; margin: 0 auto; }
-  h1 { font-size: ${fs + 4}px; margin: 0 0 4px; text-align: center; }
-  .sub { text-align: center; margin: 0 0 8px; font-size: ${fs - 1}px; color: #374151; }
-  .meta { font-size: ${fs - 1}px; color: #4b5563; margin-bottom: 8px; }
+  h1 { font-size: ${titleFs}px; margin: 0 0 4px; text-align: center; }
+  .title-sub { font-size: ${Math.max(10, Math.round(titleFs * 0.68))}px; text-align: center; margin: 0 0 6px; font-weight: 700; }
+  .sub { text-align: center; margin: 0 0 8px; font-size: ${Math.max(8, fs - 1)}px; color: #374151; }
+  .meta { font-size: ${Math.max(8, fs - 1)}px; color: #4b5563; margin-bottom: 8px; }
   hr { border: none; border-top: 1px dashed #9ca3af; margin: 8px 0; }
   .item { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }
   .item-left { flex: 1; min-width: 0; }
   .item-name { font-weight: 600; }
-  .muted { font-size: ${fs - 1}px; color: #6b7280; font-weight: 400; }
+  .muted { font-size: ${Math.max(8, fs - 1)}px; color: #6b7280; font-weight: 400; }
   .item-total { flex-shrink: 0; font-weight: 600; text-align: right; }
   .row { display: flex; justify-content: space-between; gap: 8px; margin: 2px 0; }
   .total { font-weight: 700; font-size: ${fs + 1}px; margin-top: 4px; }
-  .footer { text-align: center; margin-top: 10px; font-size: ${fs - 1}px; white-space: pre-wrap; }
+  .footer { text-align: center; margin-top: 10px; font-size: ${footerFs}px; white-space: pre-wrap; }
   .pay { margin-top: 6px; }
 </style></head><body>
 <div class="paper">
-  <h1>${escapeHtml(vm.storeName)}</h1>
+  ${(() => {
+    const raw = String(vm.storeName || "").trim();
+    const m = raw.match(/^(.*?)\s+by\s+(.+)$/i);
+    if (m) {
+      return `<h1>${escapeHtml(m[1].toUpperCase())}</h1><div class="title-sub">by ${escapeHtml(m[2])}</div>`;
+    }
+    return `<h1>${escapeHtml(raw.toUpperCase())}</h1>`;
+  })()}
   ${vm.headerLine ? `<div class="sub">${escapeHtml(vm.headerLine)}</div>` : ""}
   <div class="meta">${escapeHtml(vm.reference)}<br/>${escapeHtml(vm.dateLabel)}</div>
   <hr/>

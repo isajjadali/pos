@@ -24,11 +24,28 @@ import {
   rowNumberColumn,
   tableSorter,
   sortRowsByColumn,
+  fitNameColumnWidth,
   paginationTotalPrefix,
 } from "../utils/tableColumns.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
+import {
+  UNIT_LISTING_FILTER_OPTIONS,
+  availableUnitsOf,
+  defaultPosSaleUnit,
+  labelContentForUnit,
+  piecesPerPackOf,
+  productMatchesUnitFilter,
+  resolveSaleUnit,
+} from "../utils/saleUnits.js";
 
 const labelSize = ref({ w: 50, h: 30 });
+const labelFonts = ref({
+  fontFamily: "arial",
+  titleSize: 100,
+  nameSize: 100,
+  barcodeSize: 100,
+  priceSize: 100,
+});
 
 const message = useMessage();
 const rows = ref([]);
@@ -40,7 +57,33 @@ const printStatus = ref("");
 const selected = ref([]);
 const printMode = ref("unprinted");
 const customQty = ref(1);
+/** Per-product label unit: { [productId]: 'pack'|'piece'|'box' } */
+const labelUnitById = ref({});
 const jobs = ref([]);
+
+function productHasPackOrBox(row) {
+  return availableUnitsOf(row).length > 1;
+}
+
+function labelUnitFor(row) {
+  return (
+    labelUnitById.value[row.id] ||
+    resolveSaleUnit(row, defaultPosSaleUnit(row)).sale_unit
+  );
+}
+
+function setLabelUnit(row, unit) {
+  labelUnitById.value = { ...labelUnitById.value, [row.id]: unit };
+}
+
+function seedLabelUnits(list) {
+  const next = { ...labelUnitById.value };
+  for (const row of list || []) {
+    if (next[row.id]) continue;
+    next[row.id] = resolveSaleUnit(row, defaultPosSaleUnit(row)).sale_unit;
+  }
+  labelUnitById.value = next;
+}
 
 /** all | pending | none */
 const pendingFilter = ref("pending");
@@ -48,6 +91,9 @@ const stockFilterEnabled = ref(false);
 const stockFilterQty = ref(5);
 /** lte | gte | lt | gt */
 const stockFilterMode = ref("lte");
+/** all | piece | pack | box | multi */
+const unitFilter = ref("all");
+const unitFilterOptions = UNIT_LISTING_FILTER_OPTIONS;
 const page = ref(1);
 const pageSize = ref(50);
 const tableSorterState = ref(null);
@@ -72,6 +118,7 @@ const { routeSyncing } = useRouteQuerySync(
     stock: routeQuery.booleanFlag(stockFilterEnabled, false),
     stockQty: routeQuery.positiveInt(stockFilterQty, 5),
     stockOp: routeQuery.enumValue(stockFilterMode, "lte", ["lte", "gte", "lt", "gt"]),
+    unit: routeQuery.enumValue(unitFilter, "all", ["all", "piece", "pack", "box", "multi"]),
     mode: routeQuery.enumValue(printMode, "unprinted", ["unprinted", "current_stock", "custom"]),
     customQty: routeQuery.positiveInt(customQty, 1),
     sort: routeQuery.optionalString(sortKey),
@@ -99,7 +146,11 @@ const stockFilterModeOptions = [
 ];
 
 const hasActiveFilters = computed(
-  () => Boolean(search.value.trim()) || pendingFilter.value !== "pending" || stockFilterEnabled.value
+  () =>
+    Boolean(search.value.trim()) ||
+    pendingFilter.value !== "pending" ||
+    stockFilterEnabled.value ||
+    unitFilter.value !== "all"
 );
 
 function clearFilters() {
@@ -108,6 +159,7 @@ function clearFilters() {
   stockFilterEnabled.value = false;
   stockFilterQty.value = 5;
   stockFilterMode.value = "lte";
+  unitFilter.value = "all";
   sortKey.value = null;
   sortOrder.value = null;
   syncTableSorterFromQuery();
@@ -122,6 +174,9 @@ const filteredRows = computed(() => {
     list = list.filter((r) => (r.unprinted_barcode_qty || 0) > 0);
   } else if (pendingFilter.value === "none") {
     list = list.filter((r) => (r.unprinted_barcode_qty || 0) <= 0);
+  }
+  if (unitFilter.value !== "all") {
+    list = list.filter((r) => productMatchesUnitFilter(r, unitFilter.value));
   }
   if (stockFilterEnabled.value) {
     const n = Math.floor(Number(stockFilterQty.value));
@@ -153,35 +208,80 @@ const noPendingCount = computed(
   () => rows.value.filter((r) => (r.unprinted_barcode_qty || 0) <= 0).length
 );
 
-const columns = computed(() => [
-  rowNumberColumn(page, pageSize),
-  { type: "selection" },
-  { title: "Name", key: "name", ellipsis: true, ...tableSorter("string", "name") },
-  { title: "Barcode", key: "barcode", width: 120, ...tableSorter("string", "barcode") },
-  { title: "Stock", key: "current_stock", width: 70, ...tableSorter("number", "current_stock") },
-  {
-    title: "Pending labels",
-    key: "unprinted_barcode_qty",
-    width: 110,
-    ...tableSorter("number", "unprinted_barcode_qty"),
-  },
-  {
-    title: "",
-    key: "print",
-    width: 90,
-    render: (row) =>
-      h(
-        NButton,
-        {
-          size: "small",
-          loading: printing.value && printingRowId.value === row.id,
-          disabled: printing.value && printingRowId.value !== row.id,
-          onClick: () => printOne(row),
-        },
-        () => "Print"
-      ),
-  },
-]);
+const nameColumnWidth = computed(() => fitNameColumnWidth(pagedRows.value));
+const tableScrollX = computed(
+  () => 52 + 40 + nameColumnWidth.value + 120 + 70 + 110 + 168 + 90 + 24
+);
+
+const columns = computed(() => {
+  void labelUnitById.value;
+  void printMode.value;
+  void customQty.value;
+  return [
+    rowNumberColumn(page, pageSize),
+    { type: "selection" },
+    {
+      title: "Name",
+      key: "name",
+      width: nameColumnWidth.value,
+      ellipsis: { tooltip: true },
+      ...tableSorter("string", "name"),
+    },
+    { title: "Barcode", key: "barcode", width: 120, ...tableSorter("string", "barcode") },
+    { title: "Stock", key: "current_stock", width: 70, ...tableSorter("number", "current_stock") },
+    {
+      title: "Pending (pcs)",
+      key: "unprinted_barcode_qty",
+      width: 110,
+      ...tableSorter("number", "unprinted_barcode_qty"),
+    },
+    {
+      title: "Label unit",
+      key: "label_unit",
+      width: 168,
+      render: (row) => {
+        const n = qtyForRow(row);
+        const hint = h(
+          NText,
+          { depth: 3, style: "font-size: 11px; display: block; margin-top: 2px" },
+          () => `${n} label${n === 1 ? "" : "s"}`
+        );
+        if (!productHasPackOrBox(row)) {
+          return h("div", [h(NText, { depth: 3, style: "font-size: 12px" }, () => "Piece"), hint]);
+        }
+        const pack = piecesPerPackOf(row);
+        return h("div", [
+          h(NSelect, {
+            size: "small",
+            value: labelUnitFor(row),
+            options: availableUnitsOf(row),
+            consistentMenuWidth: false,
+            style: "width: 132px",
+            placeholder: pack > 1 ? `Pack (${pack} pcs)` : "Unit",
+            onUpdateValue: (v) => setLabelUnit(row, v),
+          }),
+          hint,
+        ]);
+      },
+    },
+    {
+      title: "",
+      key: "print",
+      width: 90,
+      render: (row) =>
+        h(
+          NButton,
+          {
+            size: "small",
+            loading: printing.value && printingRowId.value === row.id,
+            disabled: printing.value && printingRowId.value !== row.id,
+            onClick: () => printOne(row),
+          },
+          () => "Print"
+        ),
+    },
+  ];
+});
 
 const pagination = computed(() => ({
   page: page.value,
@@ -206,6 +306,12 @@ watch(pendingFilter, () => {
 });
 
 watch([stockFilterEnabled, stockFilterQty, stockFilterMode], () => {
+  if (routeSyncing.value) return;
+  page.value = 1;
+  selected.value = [];
+});
+
+watch(unitFilter, () => {
   if (routeSyncing.value) return;
   page.value = 1;
   selected.value = [];
@@ -236,12 +342,21 @@ async function load({ silent = false } = {}) {
   if (!silent) loading.value = true;
   try {
     rows.value = await listProductsForPrinting({ search: search.value });
+    seedLabelUnits(rows.value);
     jobs.value = await listPrintJobs(15);
     const settings = await getSettings();
     if (settings) {
       labelSize.value = {
         w: Number(settings.label_width_mm) || 50,
         h: Number(settings.label_height_mm) || 30,
+      };
+      const legacy = Number(settings.label_font_size) || 100;
+      labelFonts.value = {
+        fontFamily: settings.label_font_family || "arial",
+        titleSize: Number(settings.label_title_font_size) || legacy,
+        nameSize: Number(settings.label_name_font_size) || legacy,
+        barcodeSize: Number(settings.label_barcode_font_size) || legacy,
+        priceSize: Number(settings.label_price_font_size) || legacy,
       };
     }
     const maxPage = Math.max(1, Math.ceil(sortedFilteredRows.value.length / pageSize.value) || 1);
@@ -253,21 +368,48 @@ async function load({ silent = false } = {}) {
   }
 }
 
+function piecesPerLabel(row) {
+  return resolveSaleUnit(row, labelUnitFor(row)).pieces_per_unit;
+}
+
 function buildLabels(product, count) {
+  const content = labelContentForUnit(product, labelUnitFor(product));
   const labels = [];
   for (let i = 0; i < count; i++) {
-    labels.push({ name: product.name, barcode: product.barcode, price: product.selling_price });
+    labels.push({
+      name: content.name,
+      barcode: product.barcode,
+      price: content.price,
+    });
   }
   return labels;
 }
 
+/** How many physical labels to print for this row (pieces ÷ unit size). */
 function qtyForRow(row) {
-  if (printMode.value === "unprinted") return Math.max(0, row.unprinted_barcode_qty || 0);
-  if (printMode.value === "current_stock") return Math.max(0, row.current_stock || 0);
-  return Math.max(1, customQty.value);
+  const ppu = piecesPerLabel(row);
+  if (printMode.value === "custom") return Math.max(1, Math.floor(Number(customQty.value) || 1));
+  const pieces =
+    printMode.value === "unprinted"
+      ? Math.max(0, Math.floor(Number(row.unprinted_barcode_qty) || 0))
+      : Math.max(0, Math.floor(Number(row.current_stock) || 0));
+  return Math.floor(pieces / ppu);
+}
+
+/** Pending stock is in pieces — deduct labelCount × pcs-per-unit after print. */
+function reconcilePiecesFor(row, labelCount) {
+  const ppu = piecesPerLabel(row);
+  const labels = Math.max(0, Math.floor(Number(labelCount) || 0));
+  if (printMode.value === "custom") return labels * ppu;
+  const pieces =
+    printMode.value === "unprinted"
+      ? Math.max(0, Math.floor(Number(row.unprinted_barcode_qty) || 0))
+      : Math.max(0, Math.floor(Number(row.current_stock) || 0));
+  return Math.min(pieces, labels * ppu);
 }
 
 const selectedPrintStats = computed(() => {
+  void labelUnitById.value;
   const idSet = new Set(selected.value);
   let products = 0;
   let labels = 0;
@@ -285,8 +427,14 @@ const selectedPrintStats = computed(() => {
 function buildBatchFromRows(list) {
   const batch = [];
   for (const row of list) {
-    const qty = qtyForRow(row);
-    if (qty > 0) batch.push({ product: row, requested: qty });
+    const labelCount = qtyForRow(row);
+    if (labelCount > 0) {
+      batch.push({
+        product: row,
+        requested: labelCount,
+        reconcilePieces: reconcilePiecesFor(row, labelCount),
+      });
+    }
   }
   return batch;
 }
@@ -298,7 +446,8 @@ async function reconcileBatch(batch) {
     while (i < batch.length) {
       const idx = i++;
       const item = batch[idx];
-      await reconcilePrint(item.product.id, printMode.value, item.requested, item.requested);
+      const pieces = item.reconcilePieces ?? item.requested;
+      await reconcilePrint(item.product.id, printMode.value, item.requested, pieces);
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batch.length) }, () => worker()));
@@ -321,7 +470,7 @@ async function runPrint(batch) {
     const totalLabels = allLabels.length;
     printStatus.value = `Building ${totalLabels} labels for ${batch.length} products…`;
 
-    const zpl = buildBatchZpl(allLabels, labelSize.value.w, labelSize.value.h);
+    const zpl = buildBatchZpl(allLabels, labelSize.value.w, labelSize.value.h, undefined, labelFonts.value);
     printStatus.value = `Sending ${totalLabels} labels to printer…`;
 
     const result = await sendZplToZebra(zpl, {
@@ -363,12 +512,18 @@ async function runPrint(batch) {
 }
 
 function printOne(row) {
-  const qty = qtyForRow(row);
-  if (qty <= 0) {
-    message.warning("No labels to print for this product.");
+  const labelCount = qtyForRow(row);
+  if (labelCount <= 0) {
+    message.warning("No labels to print for this product (check stock vs pack/box size).");
     return;
   }
-  runPrint([{ product: row, requested: qty }]);
+  runPrint([
+    {
+      product: row,
+      requested: labelCount,
+      reconcilePieces: reconcilePiecesFor(row, labelCount),
+    },
+  ]);
 }
 
 function printSelected() {
@@ -429,6 +584,12 @@ onMounted(() => {
         :options="pendingFilterOptions"
         style="width: 200px"
       />
+      <NSelect
+        v-model:value="unitFilter"
+        :options="unitFilterOptions"
+        placeholder="Unit"
+        style="width: 150px"
+      />
       <NSpace align="center" :size="8" wrap>
         <NSwitch v-model:value="stockFilterEnabled" size="small" />
         <NText depth="3" style="font-size: 13px">Stock filter</NText>
@@ -481,7 +642,7 @@ onMounted(() => {
         :loading="loading"
         :columns="columns"
         :data="pagedRows"
-        :scroll-x="1100"
+        :scroll-x="tableScrollX"
         :remote="true"
         @update:sorter="onTableSorterUpdate"
         :pagination="pagination"

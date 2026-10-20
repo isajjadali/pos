@@ -1,4 +1,24 @@
 /**
+ * Width ≈ longest name in `rows` so Name does not steal leftover table space.
+ * @param {Array} rows
+ * @param {string|((row: any) => string)} [keyOrGetter="name"]
+ * @param {{ min?: number, charPx?: number, pad?: number, headerChars?: number }} [opts]
+ */
+export function fitNameColumnWidth(rows, keyOrGetter = "name", opts = {}) {
+  const min = opts.min ?? 72;
+  const charPx = opts.charPx ?? 7.4;
+  const pad = opts.pad ?? 24;
+  let maxChars = opts.headerChars ?? 4;
+  const get =
+    typeof keyOrGetter === "function" ? keyOrGetter : (r) => r?.[keyOrGetter];
+  for (const r of rows || []) {
+    const n = String(get(r) ?? "").length;
+    if (n > maxChars) maxChars = n;
+  }
+  return Math.max(min, Math.ceil(maxChars * charPx) + pad);
+}
+
+/**
  * First-column row numbers (1-based). Supports paginated tables.
  * @param {number|{value:number}|(() => number)} page
  * @param {number|{value:number}|(() => number)} pageSize

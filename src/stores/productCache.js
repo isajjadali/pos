@@ -3,10 +3,10 @@ import { ref, computed } from "vue";
 import { requireSupabase, supabaseConfigured } from "../lib/supabase.js";
 import { notifyProductCatalogUpdated } from "../utils/catalogSync.js";
 
-const STORAGE_KEY = "dw_product_catalog_v1";
+const STORAGE_KEY = "dw_product_catalog_v2";
 
 const POS_FIELDS =
-  "id, name, barcode, sku, external_product_id, selling_price, current_stock, is_active, weighted_avg_cost, vendor_id, category_id, updated_at";
+  "id, name, barcode, sku, external_product_id, selling_price, current_stock, is_active, weighted_avg_cost, vendor_id, category_id, updated_at, pieces_per_pack, pieces_per_box, piece_selling_price, pack_selling_price, box_selling_price, default_sale_unit";
 
 function loadFromStorage() {
   try {

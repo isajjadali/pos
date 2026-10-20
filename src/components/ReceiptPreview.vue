@@ -11,6 +11,8 @@ const props = defineProps({
 
 const vm = computed(() => buildReceiptViewModel(props.sale, props.items, props.settings));
 const paperStyle = computed(() => receiptPaperStyle(props.settings));
+const titleFs = computed(() => vm.value.settings.receipt_title_font_size);
+const footerFs = computed(() => vm.value.settings.receipt_footer_font_size);
 
 const titleParts = computed(() => {
   const raw = String(vm.value.storeName || "").trim();
@@ -18,13 +20,25 @@ const titleParts = computed(() => {
   if (m) return { main: m[1].toUpperCase(), sub: `by ${m[2]}` };
   return { main: raw.toUpperCase(), sub: "" };
 });
+
+const storeStyle = computed(() => ({
+  fontSize: `${titleFs.value}px`,
+}));
+
+const storeSubStyle = computed(() => ({
+  fontSize: `${Math.max(10, Math.round(titleFs.value * 0.68))}px`,
+}));
+
+const footerStyle = computed(() => ({
+  fontSize: `${footerFs.value}px`,
+}));
 </script>
 
 <template>
   <div class="receipt-wrap">
     <div class="receipt-paper" :style="paperStyle">
-      <div class="store">{{ titleParts.main }}</div>
-      <div v-if="titleParts.sub" class="store-sub">{{ titleParts.sub }}</div>
+      <div class="store" :style="storeStyle">{{ titleParts.main }}</div>
+      <div v-if="titleParts.sub" class="store-sub" :style="storeSubStyle">{{ titleParts.sub }}</div>
       <div v-if="vm.headerLine" class="header-line">{{ vm.headerLine }}</div>
       <div class="meta">
         <div>{{ vm.reference }}</div>
@@ -34,7 +48,7 @@ const titleParts = computed(() => {
       <div v-for="(line, idx) in vm.lines" :key="idx" class="line-item">
         <span class="line-left">
           <span class="line-name">{{ line.name }}</span>
-          <span v-if="line.qty > 1" class="line-detail"> · {{ line.qty }}×{{ formatPkr(line.unitPrice) }}</span>
+          <span v-if="line.qty > 1" class="line-detail"> · {{ line.qty }} x {{ Math.round(Number(line.unitPrice) || 0) }}</span>
         </span>
         <span class="line-total">{{ formatPkr(line.lineTotal) }}</span>
       </div>
@@ -61,7 +75,7 @@ const titleParts = computed(() => {
         <span>Change</span>
         <span>{{ formatPkr(vm.changeDue) }}</span>
       </div>
-      <div v-if="vm.footer" class="footer">{{ vm.footer }}</div>
+      <div v-if="vm.footer" class="footer" :style="footerStyle">{{ vm.footer }}</div>
     </div>
   </div>
 </template>
@@ -79,7 +93,6 @@ const titleParts = computed(() => {
 }
 .store {
   font-weight: 800;
-  font-size: 1.55em;
   letter-spacing: 0.06em;
   line-height: 1.15;
   text-align: center;
@@ -87,7 +100,6 @@ const titleParts = computed(() => {
 }
 .store-sub {
   font-weight: 700;
-  font-size: 1.05em;
   text-align: center;
   margin-bottom: 6px;
 }
@@ -150,7 +162,6 @@ const titleParts = computed(() => {
   margin-top: 12px;
   text-align: center;
   white-space: pre-wrap;
-  font-size: 0.92em;
   color: #374151;
 }
 </style>

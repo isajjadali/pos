@@ -25,7 +25,7 @@ import {
   updateStaffPassword,
   deleteStaffUser,
 } from "../services/staff.js";
-import { rowNumberColumn } from "../utils/tableColumns.js";
+import { rowNumberColumn, fitNameColumnWidth } from "../utils/tableColumns.js";
 import { toTitleCase } from "../utils/titleCase.js";
 
 const message = useMessage();
@@ -57,10 +57,19 @@ function emptyEditForm() {
 
 const editForm = ref(emptyEditForm());
 
-const columns = [
+const nameColumnWidth = computed(() => fitNameColumnWidth(rows.value, "full_name"));
+const tableScrollX = computed(() => 52 + nameColumnWidth.value + 220 + 120 + 168 + 24);
+
+const columns = computed(() => [
   rowNumberColumn(1, 100),
-  { title: "Name", key: "full_name", render: (row) => row.full_name || "—" },
-  { title: "Email", key: "email", ellipsis: { tooltip: true } },
+  {
+    title: "Name",
+    key: "full_name",
+    width: nameColumnWidth.value,
+    ellipsis: { tooltip: true },
+    render: (row) => row.full_name || "—",
+  },
+  { title: "Email", key: "email", width: 220, ellipsis: { tooltip: true } },
   {
     title: "Role",
     key: "role",
@@ -92,7 +101,7 @@ const columns = [
         ),
       ]),
   },
-];
+]);
 
 const isEditingSelf = computed(() => editing.value?.id === auth.user?.id);
 
@@ -250,7 +259,7 @@ onMounted(load);
         :columns="columns"
         :data="rows"
         :row-key="(r) => r.id"
-        :scroll-x="780"
+        :scroll-x="tableScrollX"
       />
     </div>
   </div>

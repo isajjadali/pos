@@ -5,7 +5,7 @@ export async function listProductsForPrinting({ search = "" } = {}) {
   let q = sb
     .from("products")
     .select(
-      "id, name, barcode, sku, external_product_id, selling_price, current_stock, unprinted_barcode_qty"
+      "id, name, barcode, sku, external_product_id, selling_price, current_stock, unprinted_barcode_qty, pieces_per_pack, pieces_per_box, piece_selling_price, pack_selling_price, box_selling_price, default_sale_unit"
     )
     .eq("is_active", true)
     .order("name");

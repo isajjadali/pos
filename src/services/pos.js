@@ -146,7 +146,9 @@ export async function findProductByBarcode(barcode) {
   const sb = requireSupabase();
   const { data, error } = await sb
     .from("products")
-    .select("id, name, barcode, sku, external_product_id, selling_price, current_stock")
+    .select(
+      "id, name, barcode, sku, external_product_id, selling_price, current_stock, pieces_per_pack, pieces_per_box, piece_selling_price, pack_selling_price, box_selling_price, default_sale_unit"
+    )
     .eq("is_active", true)
     .or(`barcode.eq.${term},sku.eq.${term},external_product_id.eq.${term}`)
     .limit(1)
@@ -164,7 +166,9 @@ export async function searchProductsForPos(term) {
   const sb = requireSupabase();
   const { data, error } = await sb
     .from("products")
-    .select("id, name, barcode, sku, selling_price, current_stock")
+    .select(
+      "id, name, barcode, sku, selling_price, current_stock, pieces_per_pack, pieces_per_box, piece_selling_price, pack_selling_price, box_selling_price, default_sale_unit"
+    )
     .eq("is_active", true)
     .or(
       `name.ilike.%${q}%,barcode.ilike.%${q}%,sku.ilike.%${q}%,external_product_id.ilike.%${q}%`

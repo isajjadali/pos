@@ -13,6 +13,7 @@ import {
   useMessage,
 } from "naive-ui";
 import { formatPkr } from "../utils/format.js";
+import { fitNameColumnWidth } from "../utils/tableColumns.js";
 import { previewBulkExternalProductIds, createProductsBulk } from "../services/products.js";
 import CreatableVendorSelect from "./CreatableVendorSelect.vue";
 
@@ -40,6 +41,7 @@ function newDraftRow() {
     name: "",
     initial_qty: 0,
     purchase_price: 0,
+    pieces_per_pack: 1,
     selling_price: 0,
   };
 }
@@ -81,7 +83,7 @@ function focusCell(rowIndex, colIndex) {
   });
 }
 
-const COL_COUNT = 5;
+const COL_COUNT = 6;
 
 function onEnter(rowIndex, colIndex) {
   if (colIndex < COL_COUNT - 1) {
@@ -135,32 +137,36 @@ function backToEntry() {
   step.value = "entry";
 }
 
-const reviewColumns = [
-  { title: "#", key: "_n", width: 44, render: (_row, index) => index + 1 },
-  {
-    title: "Product ID",
-    key: "resolved_external_product_id",
-    width: 100,
-    render: (row) =>
-      row.id_source === "auto"
-        ? `${row.resolved_external_product_id} (auto)`
-        : row.resolved_external_product_id,
-  },
-  { title: "Name", key: "name", ellipsis: { tooltip: true } },
-  { title: "Qty", key: "initial_qty", width: 70 },
-  {
-    title: "Purchase",
-    key: "purchase_price",
-    width: 100,
-    render: (r) => formatPkr(r.purchase_price),
-  },
-  {
-    title: "Sale",
-    key: "selling_price",
-    width: 100,
-    render: (r) => formatPkr(r.selling_price),
-  },
-];
+const reviewColumns = computed(() => {
+  const nameW = fitNameColumnWidth(reviewRows.value);
+  return [
+    { title: "#", key: "_n", width: 44, render: (_row, index) => index + 1 },
+    {
+      title: "Product ID",
+      key: "resolved_external_product_id",
+      width: 100,
+      render: (row) =>
+        row.id_source === "auto"
+          ? `${row.resolved_external_product_id} (auto)`
+          : row.resolved_external_product_id,
+    },
+    { title: "Name", key: "name", width: nameW, ellipsis: { tooltip: true } },
+    { title: "Qty", key: "initial_qty", width: 70 },
+    {
+      title: "Purchase",
+      key: "purchase_price",
+      width: 100,
+      render: (r) => formatPkr(r.purchase_price),
+    },
+    { title: "Pack pcs", key: "pieces_per_pack", width: 72 },
+    {
+      title: "Sale",
+      key: "selling_price",
+      width: 100,
+      render: (r) => formatPkr(r.selling_price),
+    },
+  ];
+});
 
 async function confirmCreate() {
   if (!reviewRows.value.length) return;
@@ -229,8 +235,9 @@ function close() {
         <div class="bulk-create-head">
           <span>Product ID</span>
           <span>Name</span>
-          <span>Qty</span>
+          <span>Qty pcs</span>
           <span>Purchase</span>
+          <span>Pack pcs</span>
           <span>Sale</span>
           <span />
         </div>
@@ -276,11 +283,21 @@ function close() {
           </div>
           <div :data-bulk-row="rowIndex" :data-bulk-col="4">
             <NInputNumber
+              v-model:value="row.pieces_per_pack"
+              :min="1"
+              :precision="0"
+              size="small"
+              style="width: 100%"
+              @keydown.enter.prevent="onEnter(rowIndex, 4)"
+            />
+          </div>
+          <div :data-bulk-row="rowIndex" :data-bulk-col="5">
+            <NInputNumber
               v-model:value="row.selling_price"
               :min="0"
               size="small"
               style="width: 100%"
-              @keydown.enter.prevent="onEnter(rowIndex, 4)"
+              @keydown.enter.prevent="onEnter(rowIndex, 5)"
             />
           </div>
           <NButton
@@ -335,7 +352,7 @@ function close() {
 .bulk-create-head,
 .bulk-create-row {
   display: grid;
-  grid-template-columns: 110px 1fr 72px 100px 100px 36px;
+  grid-template-columns: 100px 1fr 64px 88px 64px 88px 36px;
   gap: 8px;
   align-items: center;
 }

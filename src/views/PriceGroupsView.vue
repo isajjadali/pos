@@ -27,6 +27,15 @@ import {
   priceGroupKey,
 } from "../services/priceGroups.js";
 import { rowNumberColumn, tableSorter } from "../utils/tableColumns.js";
+import {
+  UNIT_LISTING_FILTER_OPTIONS,
+  defaultPosSaleUnit,
+  formatProductUnitPrices,
+  productHasPack,
+  productHasBox,
+  productMatchesUnitFilter,
+  resolveSaleUnit,
+} from "../utils/saleUnits.js";
 
 const RANGES_LS = "dw_price_group_ranges_v1";
 
@@ -42,6 +51,9 @@ const search = ref("");
 const vendorFilter = ref(null);
 const activeOnly = ref(true);
 const includeZeroStock = ref(true);
+/** all | piece | pack | box | multi */
+const unitFilter = ref("all");
+const unitFilterOptions = UNIT_LISTING_FILTER_OPTIONS;
 
 /** exact = same purchase cost | ranges = custom min–max bands */
 const groupMode = ref("exact");
@@ -96,7 +108,8 @@ const hasActiveFilters = computed(
     Boolean(search.value.trim()) ||
     vendorFilter.value != null ||
     !activeOnly.value ||
-    !includeZeroStock.value
+    !includeZeroStock.value ||
+    unitFilter.value !== "all"
 );
 
 function clearFilters() {
@@ -104,6 +117,7 @@ function clearFilters() {
   vendorFilter.value = null;
   activeOnly.value = true;
   includeZeroStock.value = true;
+  unitFilter.value = "all";
 }
 
 function money(n) {
@@ -118,8 +132,13 @@ function productCost(p) {
   return money(p.weighted_avg_cost);
 }
 
+/** Primary sell-unit price (pack when pack configured — same as POS default). */
 function productSale(p) {
-  return money(p.selling_price);
+  return money(resolveSaleUnit(p, defaultPosSaleUnit(p)).unit_selling_price);
+}
+
+function productSaleLabel(p) {
+  return formatProductUnitPrices(p, { multiline: true });
 }
 
 const filteredProducts = computed(() => {
@@ -127,6 +146,7 @@ const filteredProducts = computed(() => {
   return (products.value ?? []).filter((p) => {
     if (!includeZeroStock.value && (Number(p.current_stock) || 0) <= 0) return false;
     if (vendorFilter.value && p.vendor_id !== vendorFilter.value) return false;
+    if (!productMatchesUnitFilter(p, unitFilter.value)) return false;
     if (!q) return true;
     const hay = `${p.name ?? ""} ${p.external_product_id ?? ""}`.toLowerCase();
     return hay.includes(q);
@@ -275,7 +295,13 @@ const groups = computed(() => {
       profitSort,
       saleLabel: mixedSales
         ? "Mixed"
-        : formatPkr(g.products.length ? productSale(g.products[0]) : 0),
+        : g.products.length
+          ? productSaleLabel(g.products[0])
+          : "—",
+      saleLabelMulti:
+        !mixedSales &&
+        g.products.length > 0 &&
+        (productHasPack(g.products[0]) || productHasBox(g.products[0])),
     };
   });
 
@@ -435,7 +461,11 @@ async function saveChanged() {
     for (const g of changed) {
       for (const p of g.products) {
         if (!nearlyEqual(productSale(p), g.draftPrice)) {
-          updates.push({ id: p.id, selling_price: g.draftPrice });
+          updates.push({
+            id: p.id,
+            selling_price: g.draftPrice,
+            target_unit: defaultPosSaleUnit(p),
+          });
         }
       }
     }
@@ -466,7 +496,7 @@ const columns = computed(() => [
       const body = row.products.map((p) => {
         const stock = Number(p.current_stock) || 0;
         const cost = productCost(p);
-        const sale = productSale(p);
+        const multi = productHasPack(p) || productHasBox(p);
         const m = marginPercent(row.draftPrice, cost);
         const below = row.draftPrice + 0.009 < cost;
         return h("div", { class: "pg-expand-row", key: p.id }, [
@@ -474,7 +504,14 @@ const columns = computed(() => [
           h("span", { class: "pg-expand-name", title: p.name }, p.name || "—"),
           h("span", { class: "pg-expand-num" }, String(stock)),
           h("span", { class: "pg-expand-num" }, formatPkr(cost)),
-          h("span", { class: "pg-expand-num" }, formatPkr(sale)),
+          h(
+            "span",
+            {
+              class: ["pg-expand-num", multi ? "pg-expand-sale-multi" : ""],
+              style: multi ? "white-space: pre-line; font-size: 12px; line-height: 1.35" : undefined,
+            },
+            productSaleLabel(p)
+          ),
           h(
             "span",
             { class: ["pg-expand-num", below || (m != null && m < 0) ? "pg-neg" : ""] },
@@ -507,10 +544,19 @@ const columns = computed(() => [
   {
     title: "Sale now",
     key: "saleSort",
-    width: 100,
+    width: 140,
     ...tableSorter("number", "saleSort"),
     render: (r) =>
-      h("span", { class: r.mixedSales ? "pg-muted" : "" }, r.saleLabel),
+      h(
+        "span",
+        {
+          class: r.mixedSales ? "pg-muted" : "",
+          style: r.saleLabelMulti
+            ? "white-space: pre-line; font-size: 12px; line-height: 1.35"
+            : undefined,
+        },
+        r.saleLabel
+      ),
   },
   {
     title: "Products",
@@ -705,6 +751,12 @@ onMounted(load);
         placeholder="Vendor"
         style="width: 200px"
       />
+      <NSelect
+        v-model:value="unitFilter"
+        :options="unitFilterOptions"
+        placeholder="Unit"
+        style="width: 150px"
+      />
       <NSwitch v-model:value="activeOnly">
         <template #checked>Active only</template>
         <template #unchecked>Include inactive</template>
@@ -713,6 +765,9 @@ onMounted(load);
         <template #checked>Include 0 stock</template>
         <template #unchecked>Hide 0 stock</template>
       </NSwitch>
+      <NText depth="3" style="font-size: 12px; max-width: 280px">
+        New sale applies to pack price when pack is set, else piece.
+      </NText>
       <ClearFiltersButton :disabled="!hasActiveFilters" @clear="clearFilters" />
       <NButton :disabled="!supabaseConfigured" :loading="loading" @click="load">Refresh</NButton>
       <NButton :disabled="!summary.changedGroups" @click="resetDrafts">Reset drafts</NButton>

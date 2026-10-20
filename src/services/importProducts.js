@@ -70,11 +70,14 @@ export async function importRow(mapped, behavior) {
     }
     if (behavior === "update_info") {
       const sb = requireSupabase();
+      const nextSale = sale || existing.selling_price;
       await sb
         .from("products")
         .update({
           name,
-          selling_price: sale || existing.selling_price,
+          selling_price: nextSale,
+          piece_selling_price: nextSale,
+          pack_selling_price: nextSale,
           weighted_avg_cost: purchase || existing.weighted_avg_cost,
           updated_at: new Date().toISOString(),
         })

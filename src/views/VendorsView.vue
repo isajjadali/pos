@@ -24,7 +24,12 @@ import {
   updateVendor,
   deleteVendor,
 } from "../services/vendors.js";
-import { rowNumberColumn, tableSorter, paginationTotalPrefix } from "../utils/tableColumns.js";
+import {
+  rowNumberColumn,
+  tableSorter,
+  fitNameColumnWidth,
+  paginationTotalPrefix,
+} from "../utils/tableColumns.js";
 import { toTitleCase } from "../utils/titleCase.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
 
@@ -96,10 +101,21 @@ function emptyForm() {
   };
 }
 
+const nameColumnWidth = computed(() => fitNameColumnWidth(rows.value));
+const tableScrollX = computed(
+  () => 52 + 40 + nameColumnWidth.value + 120 + 140 + 120 + 90 + 160 + 24
+);
+
 const columns = computed(() => [
   rowNumberColumn(page, pageSize),
   { type: "selection" },
-  { title: "Name", key: "name", ...tableSorter("string", "name") },
+  {
+    title: "Name",
+    key: "name",
+    width: nameColumnWidth.value,
+    ellipsis: { tooltip: true },
+    ...tableSorter("string", "name"),
+  },
   {
     title: "Products",
     key: "product_count",
@@ -116,11 +132,23 @@ const columns = computed(() => [
         () => (row.product_count === 0 ? "0 — unused" : String(row.product_count))
       ),
   },
-  { title: "Contact", key: "contact_person", ...tableSorter("string", "contact_person") },
-  { title: "Phone", key: "phone", ...tableSorter("string", "phone") },
+  {
+    title: "Contact",
+    key: "contact_person",
+    width: 140,
+    ellipsis: { tooltip: true },
+    ...tableSorter("string", "contact_person"),
+  },
+  {
+    title: "Phone",
+    key: "phone",
+    width: 120,
+    ...tableSorter("string", "phone"),
+  },
   {
     title: "Status",
     key: "is_active",
+    width: 90,
     ...tableSorter("boolean", "is_active"),
     render: (row) =>
       h(NTag, { type: row.is_active ? "success" : "default", size: "small" }, () =>
@@ -347,7 +375,7 @@ onMounted(load);
       :loading="loading"
       :columns="columns"
       :data="rows"
-      :scroll-x="720"
+      :scroll-x="tableScrollX"
       :remote="true"
       @update:sorter="onTableSorterUpdate"
       :pagination="{

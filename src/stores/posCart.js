@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { computeScheduledDiscountPkr, moneyClose } from "../utils/scheduledDiscount.js";
+import { defaultPosSaleUnit, resolveSaleUnit, unitLabel } from "../utils/saleUnits.js";
 
 function newLineId() {
   return crypto.randomUUID();
@@ -26,7 +27,17 @@ function productSnapshot(product) {
     sku: product.sku,
     current_stock: product.current_stock,
     selling_price: product.selling_price,
+    pieces_per_pack: product.pieces_per_pack,
+    pieces_per_box: product.pieces_per_box,
+    piece_selling_price: product.piece_selling_price,
+    pack_selling_price: product.pack_selling_price,
+    box_selling_price: product.box_selling_price,
+    default_sale_unit: product.default_sale_unit,
   };
+}
+
+function linePieces(line) {
+  return Math.max(1, Math.floor(Number(line.quantity) || 0)) * Math.max(1, Math.floor(Number(line.pieces_per_unit) || 1));
 }
 
 export const usePosCartStore = defineStore("posCart", () => {
@@ -45,26 +56,36 @@ export const usePosCartStore = defineStore("posCart", () => {
   const heldCarts = computed(() => carts.value.filter((c) => c.status === "on_hold"));
   const openCarts = computed(() => carts.value.filter((c) => c.status === "active"));
 
-  /** Qty reserved in all open local tabs (active + on hold), until sale completes or tab cleared. */
-  const reservedByProductId = computed(() => {
+  /** Pieces reserved in all open local tabs (active + on hold). */
+  const reservedPiecesByProductId = computed(() => {
     const map = {};
     for (const cart of carts.value) {
       for (const line of cart.items) {
-        map[line.product_id] = (map[line.product_id] || 0) + line.quantity;
+        map[line.product_id] = (map[line.product_id] || 0) + linePieces(line);
       }
     }
     return map;
   });
 
-  function availableToAdd(productId, catalogStock) {
-    const reserved = reservedByProductId.value[productId] || 0;
+  /** @deprecated use reservedPiecesByProductId — kept as alias for any old refs */
+  const reservedByProductId = reservedPiecesByProductId;
+
+  function availablePiecesToAdd(productId, catalogStock) {
+    const reserved = reservedPiecesByProductId.value[productId] || 0;
     return Math.max(0, Math.floor(Number(catalogStock) || 0) - reserved);
   }
 
+  function availableToAdd(productId, catalogStock, piecesPerUnit = 1) {
+    const pcs = Math.max(1, Math.floor(Number(piecesPerUnit) || 1));
+    return Math.floor(availablePiecesToAdd(productId, catalogStock) / pcs);
+  }
+
   function maxQtyForLine(line, catalogStock) {
-    const reserved = reservedByProductId.value[line.product_id] || 0;
+    const reserved = reservedPiecesByProductId.value[line.product_id] || 0;
     const stock = Math.floor(Number(catalogStock) || 0);
-    return Math.max(0, stock - reserved + line.quantity);
+    const freePieces = stock - reserved + linePieces(line);
+    const ppu = Math.max(1, Math.floor(Number(line.pieces_per_unit) || 1));
+    return Math.max(0, Math.floor(freePieces / ppu));
   }
 
   function syncLineStockFromCatalog(findProduct) {
@@ -88,16 +109,27 @@ export const usePosCartStore = defineStore("posCart", () => {
   /** Line whose qty input should receive focus after a scan add */
   const focusQtyLineId = ref(null);
 
-  function addProduct(product, addQty = 1) {
+  /**
+   * @param {object} product
+   * @param {number} [addQty]
+   * @param {string} [saleUnit] piece|pack|box — defaults to pack when pack size > 1
+   */
+  function addProduct(product, addQty = 1, saleUnit = null) {
     const cart = ensureActiveCart();
     const delta = Math.max(1, Math.floor(Number(addQty) || 1));
-    const price = Number(product.selling_price) || 0;
+    const resolved = resolveSaleUnit(product, saleUnit ?? defaultPosSaleUnit(product));
     const stock = Math.floor(Number(product.current_stock) || 0);
-    const existing = cart.items.find((l) => l.product_id === product.id);
+    const existing = cart.items.find(
+      (l) => l.product_id === product.id && l.sale_unit === resolved.sale_unit
+    );
     if (existing) {
       const max = maxQtyForLine(existing, stock);
       if (existing.quantity + delta > max) {
-        throw new Error(max <= 0 ? "Out of stock for this tab" : `Only ${max} available (${stock} in store, others in tabs)`);
+        throw new Error(
+          max <= 0
+            ? "Out of stock for this tab"
+            : `Only ${max} ${unitLabel(existing.sale_unit).toLowerCase()}(s) available (${stock} pcs in store)`
+        );
       }
       existing.quantity += delta;
       existing.line_total = existing.quantity * existing.unit_selling_price;
@@ -105,21 +137,77 @@ export const usePosCartStore = defineStore("posCart", () => {
       focusQtyLineId.value = existing.lineId;
       return existing;
     }
-    const avail = availableToAdd(product.id, stock);
+    const avail = availableToAdd(product.id, stock, resolved.pieces_per_unit);
     if (avail < delta) {
-      throw new Error(avail <= 0 ? "Out of stock for this tab" : `Only ${avail} available (${stock} in store, others in tabs)`);
+      throw new Error(
+        avail <= 0
+          ? "Out of stock for this tab"
+          : `Only ${avail} ${unitLabel(resolved.sale_unit).toLowerCase()}(s) available (${stock} pcs in store)`
+      );
     }
     const line = {
       lineId: newLineId(),
       product_id: product.id,
       quantity: delta,
-      unit_selling_price: price,
-      line_total: price * delta,
+      sale_unit: resolved.sale_unit,
+      pieces_per_unit: resolved.pieces_per_unit,
+      unit_selling_price: resolved.unit_selling_price,
+      line_total: resolved.unit_selling_price * delta,
       products: productSnapshot(product),
     };
     cart.items.push(line);
     focusQtyLineId.value = line.lineId;
     return line;
+  }
+
+  function setLineSaleUnit(lineId, saleUnit) {
+    const cart = activeCart.value;
+    if (!cart) return;
+    const line = cart.items.find((l) => l.lineId === lineId);
+    if (!line) return;
+    if (line.sale_unit === saleUnit) return;
+
+    const product = {
+      ...(line.products || {}),
+      id: line.product_id,
+      current_stock: line.products?.current_stock,
+    };
+    const resolved = resolveSaleUnit(product, saleUnit);
+    const stock = Math.floor(Number(product.current_stock) || 0);
+    const qtyToKeep = line.quantity;
+
+    const otherSame = cart.items.find(
+      (l) =>
+        l.lineId !== lineId &&
+        l.product_id === line.product_id &&
+        l.sale_unit === resolved.sale_unit
+    );
+
+    if (otherSame) {
+      removeLine(lineId);
+      const max = maxQtyForLine(otherSame, stock);
+      const next = Math.min(otherSame.quantity + qtyToKeep, max);
+      if (next < otherSame.quantity + qtyToKeep) {
+        otherSame.quantity = Math.max(otherSame.quantity, next);
+        otherSame.line_total = otherSame.quantity * otherSame.unit_selling_price;
+        throw new Error(
+          `Merged what stock allows — only ${otherSame.quantity} ${unitLabel(resolved.sale_unit).toLowerCase()}(s) on that line`
+        );
+      }
+      otherSame.quantity = next;
+      otherSame.line_total = next * otherSame.unit_selling_price;
+      return;
+    }
+
+    line.sale_unit = resolved.sale_unit;
+    line.pieces_per_unit = resolved.pieces_per_unit;
+    line.unit_selling_price = resolved.unit_selling_price;
+    const max = maxQtyForLine(line, stock);
+    if (line.quantity > max) {
+      if (max < 1) throw new Error("Not enough stock for this unit");
+      line.quantity = max;
+    }
+    line.line_total = line.quantity * line.unit_selling_price;
   }
 
   function clearFocusQtyLine() {
@@ -139,7 +227,11 @@ export const usePosCartStore = defineStore("posCart", () => {
     const stock = line.products?.current_stock ?? 0;
     const max = maxQtyForLine(line, stock);
     if (next > max) {
-      throw new Error(max <= 0 ? "Out of stock for this tab" : `Only ${max} available for this line`);
+      throw new Error(
+        max <= 0
+          ? "Out of stock for this tab"
+          : `Only ${max} ${unitLabel(line.sale_unit).toLowerCase()}(s) available for this line`
+      );
     }
     line.quantity = next;
     line.line_total = next * Number(line.unit_selling_price);
@@ -277,6 +369,8 @@ export const usePosCartStore = defineStore("posCart", () => {
       product_id: l.product_id,
       quantity: l.quantity,
       unit_selling_price: Number(l.unit_selling_price),
+      sale_unit: l.sale_unit || "piece",
+      pieces_per_unit: Math.max(1, Math.floor(Number(l.pieces_per_unit) || 1)),
     }));
   }
 
@@ -289,12 +383,15 @@ export const usePosCartStore = defineStore("posCart", () => {
     heldCarts,
     openCarts,
     reservedByProductId,
+    reservedPiecesByProductId,
     availableToAdd,
+    availablePiecesToAdd,
     maxQtyForLine,
     syncLineStockFromCatalog,
     focusQtyLineId,
     ensureActiveCart,
     addProduct,
+    setLineSaleUnit,
     clearFocusQtyLine,
     setLineQty,
     removeLine,

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from "vue";
 import JsBarcode from "jsbarcode";
+import { labelFontStack } from "../config/printFonts.js";
 import { computeRetailLabelLayout, dotsToMm } from "../utils/zebraZpl.js";
 
 const props = defineProps({
@@ -9,6 +10,13 @@ const props = defineProps({
   name: { type: String, default: "Sample Product Name" },
   barcode: { type: String, default: "DW1A2B3C4D5E" },
   price: { type: Number, default: 250 },
+  /** Stored key e.g. arial — preview CSS; Zebra print uses scalable font 0 */
+  fontFamily: { type: String, default: "arial" },
+  /** Percent of auto layout sizes (100 = previous default) */
+  titleFontSize: { type: Number, default: 100 },
+  nameFontSize: { type: Number, default: 100 },
+  barcodeFontSize: { type: Number, default: 100 },
+  priceFontSize: { type: Number, default: 100 },
 });
 
 const barcodeSvg = ref(null);
@@ -20,8 +28,16 @@ const label = computed(() => ({
 }));
 
 const layout = computed(() =>
-  computeRetailLabelLayout(label.value, props.widthMm, props.heightMm)
+  computeRetailLabelLayout(label.value, props.widthMm, props.heightMm, undefined, {
+    fontFamily: props.fontFamily,
+    titleSize: props.titleFontSize,
+    nameSize: props.nameFontSize,
+    barcodeSize: props.barcodeFontSize,
+    priceSize: props.priceFontSize,
+  })
 );
+
+const textFontFamily = computed(() => labelFontStack(props.fontFamily));
 
 const MM_TO_PX = 96 / 25.4;
 const wrapRef = ref(null);
@@ -85,6 +101,7 @@ const titleStyle = computed(() => ({
   top: pctY(layout.value.titleY ?? 0),
   left: pctX(layout.value.sideM ?? 0),
   width: pctW(layout.value.innerW ?? 0),
+  fontFamily: textFontFamily.value,
   fontSize: mmFromDots(layout.value.titleFont ?? 18),
   lineHeight: layout.value.titleLineGap
     ? 1 + layout.value.titleLineGap / layout.value.titleFont
@@ -96,6 +113,7 @@ const nameStyle = computed(() => ({
   top: pctY(layout.value.nameY ?? 0),
   left: pctX(layout.value.sideM ?? 0),
   width: pctW(layout.value.innerW ?? 0),
+  fontFamily: textFontFamily.value,
   fontSize: mmFromDots(layout.value.nameFont ?? 18),
   lineHeight: layout.value.nameLineGap
     ? 1 + layout.value.nameLineGap / layout.value.nameFont
@@ -107,6 +125,7 @@ const hriStyle = computed(() => ({
   top: pctY(layout.value.hriY ?? 0),
   left: pctX(layout.value.sideM ?? 0),
   width: pctW(layout.value.innerW ?? 0),
+  fontFamily: textFontFamily.value,
   fontSize: mmFromDots(layout.value.idFont ?? 16),
   lineHeight: 1.05,
 }));
@@ -115,6 +134,7 @@ const priceStyle = computed(() => ({
   top: pctY(layout.value.priceY ?? 0),
   left: pctX(layout.value.sideM ?? 0),
   width: pctW(layout.value.innerW ?? 0),
+  fontFamily: textFontFamily.value,
   fontSize: mmFromDots(layout.value.priceFont ?? 18),
   lineHeight: 1.05,
 }));
@@ -145,7 +165,18 @@ function renderBarcode() {
 }
 
 watch(
-  () => [props.widthMm, props.heightMm, props.name, props.barcode, props.price],
+  () => [
+    props.widthMm,
+    props.heightMm,
+    props.name,
+    props.barcode,
+    props.price,
+    props.fontFamily,
+    props.titleFontSize,
+    props.nameFontSize,
+    props.barcodeFontSize,
+    props.priceFontSize,
+  ],
   renderBarcode,
   { immediate: true }
 );
@@ -211,7 +242,6 @@ watch(
   position: absolute;
   text-align: center;
   color: #111;
-  font-family: Arial, Helvetica, sans-serif;
   font-weight: 700;
   overflow: hidden;
   box-sizing: border-box;
