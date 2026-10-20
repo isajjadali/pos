@@ -35,7 +35,9 @@ export const useAuthStore = defineStore("auth", () => {
       profileLoaded.value = true;
       return;
     }
-    profileLoaded.value = false;
+    // Keep previous profile visible while reloading — avoids sidebar/menu blink on tab focus
+    const hadProfile = profileLoaded.value && profile.value;
+    if (!hadProfile) profileLoaded.value = false;
     const sb = requireSupabase();
     const { data, error: err } = await sb
       .from("profiles")
@@ -44,7 +46,7 @@ export const useAuthStore = defineStore("auth", () => {
       .maybeSingle();
     if (err) {
       console.warn("profile load failed", err.message);
-      profile.value = { role: "sales", full_name: null };
+      if (!hadProfile) profile.value = { role: "sales", full_name: null };
     } else {
       profile.value = data ?? { role: "sales", full_name: null };
     }
@@ -71,10 +73,17 @@ export const useAuthStore = defineStore("auth", () => {
     }
 
     sb.auth.onAuthStateChange((event, session) => {
-      user.value = session?.user ?? null;
-      if (event === "SIGNED_IN" && session?.user) {
+      const nextUser = session?.user ?? null;
+      const sameUser = nextUser?.id && nextUser.id === user.value?.id;
+      user.value = nextUser;
+
+      // Tab focus often re-emits SIGNED_IN / TOKEN_REFRESHED — don't reload UI for same session
+      if (event === "SIGNED_IN" && nextUser && !sameUser) {
+        loadProfile().then(() => refreshProductCatalog().catch(() => {}));
+      } else if (event === "SIGNED_IN" && nextUser && sameUser && !profileLoaded.value) {
         loadProfile().then(() => refreshProductCatalog().catch(() => {}));
       }
+
       if (event === "SIGNED_OUT") {
         resetProfile();
         profileLoaded.value = true;

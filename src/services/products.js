@@ -43,6 +43,9 @@ export async function listProducts({
 
   if (sortKey === "vendor") {
     query = query.order("name", { ascending, foreignTable: "vendors" });
+  } else if (sortKey === "external_product_id") {
+    // Natural order: AR-10, AR-11, … AR-100 (not lexicographic AR-10, AR-100, AR-11)
+    query = query.order("external_product_id_sort", { ascending, nullsFirst: false });
   } else if (sortKey && PRODUCT_SORT_COLUMNS.has(sortKey)) {
     query = query.order(sortKey, { ascending });
   } else {
@@ -204,6 +207,80 @@ export async function updateProduct(id, payload) {
   }
   await syncCatalog();
   return data;
+}
+
+/**
+ * Bulk-update products (same fields as bulk create: ID, name, qty, purchase, sale).
+ * Optional vendorId / categoryId override every row when set.
+ * @param {Array<{
+ *   id: string,
+ *   name: string,
+ *   external_product_id?: string,
+ *   current_stock?: number,
+ *   stock_at_open?: number,
+ *   purchase_price?: number,
+ *   selling_price?: number,
+ *   sku?: string,
+ *   barcode?: string,
+ *   vendor_id?: string|null,
+ *   category_id?: string|null,
+ *   low_stock_threshold?: number,
+ *   is_active?: boolean,
+ * }>} rows
+ */
+export async function updateProductsBulk(rows, { vendorId = undefined, categoryId = undefined } = {}) {
+  const { setProductStock } = await import("./inventory.js");
+  const updated = [];
+  const errors = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const name = toTitleCase(row.name);
+    if (!row.id) {
+      errors.push({ index: i, name: name || "—", message: "Missing product id" });
+      continue;
+    }
+    if (!String(name ?? "").trim()) {
+      errors.push({ index: i, name: "—", message: "Product name is required" });
+      continue;
+    }
+    try {
+      const sb = requireSupabase();
+      const selling = Number(row.selling_price);
+      const cost = Number(row.purchase_price ?? row.weighted_avg_cost);
+      const payload = {
+        name,
+        external_product_id: String(row.external_product_id ?? "").trim() || null,
+        sku: row.sku?.trim?.() ? row.sku.trim() : row.sku || null,
+        barcode: row.barcode?.trim?.() ? row.barcode.trim() : row.barcode || null,
+        category_id:
+          categoryId !== undefined && categoryId !== null
+            ? categoryId
+            : row.category_id || null,
+        vendor_id:
+          vendorId !== undefined && vendorId !== null ? vendorId : row.vendor_id || null,
+        selling_price: Number.isFinite(selling) ? selling : 0,
+        weighted_avg_cost: Number.isFinite(cost) ? cost : 0,
+        low_stock_threshold: Math.max(0, Math.floor(Number(row.low_stock_threshold) || 5)),
+        is_active: row.is_active !== false,
+        updated_at: new Date().toISOString(),
+      };
+      const { error } = await sb.from("products").update(payload).eq("id", row.id);
+      if (error) throw error;
+
+      const stockNow = Math.max(0, Math.floor(Number(row.current_stock) || 0));
+      const stockWas = Math.max(0, Math.floor(Number(row.stock_at_open) || 0));
+      if (stockNow !== stockWas) {
+        await setProductStock(row.id, stockNow, "Stock updated from bulk edit");
+      }
+      updated.push({ index: i, productId: row.id, name });
+    } catch (e) {
+      errors.push({ index: i, name: name || "—", message: e.message || "Update failed" });
+    }
+  }
+
+  if (updated.length) await syncCatalog();
+  return { updated, errors };
 }
 
 export async function deactivateProduct(id) {

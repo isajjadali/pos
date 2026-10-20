@@ -41,7 +41,12 @@ import { useLayoutStore } from "../stores/layout.js";
 import { PRODUCT_CATALOG_UPDATED } from "../utils/catalogSync.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
 import { getActiveScheduledSaleDiscount } from "../services/scheduledDiscounts.js";
-import { formatScheduledPromoRule } from "../utils/scheduledDiscount.js";
+import {
+  formatScheduledPromoRule,
+  formatLinePromoRule,
+  computeLineScheduledDiscountPkr,
+  lineMatchesPromo,
+} from "../utils/scheduledDiscount.js";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -128,15 +133,15 @@ const scheduledPromoOnCart = computed(() => {
 async function applyScheduledPromoToCart() {
   if (!supabaseConfigured) {
     activeScheduledPromo.value = null;
-    cartStore.syncScheduledDiscount(null, subtotal.value);
+    cartStore.syncScheduledDiscount(null, items.value);
     return;
   }
   try {
-    activeScheduledPromo.value = await getActiveScheduledSaleDiscount(undefined, subtotal.value);
+    activeScheduledPromo.value = await getActiveScheduledSaleDiscount(undefined, items.value);
   } catch {
     activeScheduledPromo.value = null;
   }
-  cartStore.syncScheduledDiscount(activeScheduledPromo.value, subtotal.value);
+  cartStore.syncScheduledDiscount(activeScheduledPromo.value, items.value);
 }
 
 function refreshScheduledPromoForPos() {
@@ -355,12 +360,6 @@ async function refreshPosCatalog() {
   }
 }
 
-function onCatalogVisibility() {
-  if (document.visibilityState === "visible" && route.name === "pos") {
-    refreshPosCatalog();
-  }
-}
-
 function onGlobalCatalogUpdated() {
   if (route.name !== "pos") return;
   cartStore.syncLineStockFromCatalog((id) => productCache.products.find((p) => p.id === id));
@@ -385,7 +384,25 @@ const itemColumns = computed(() => [
       return h("span", { class: max <= 0 ? "pos-avail-warn" : "pos-avail-ok" }, String(max));
     },
   },
-  { title: "Price", key: "unit_selling_price", width: 100, render: (r) => formatPkr(r.unit_selling_price) },
+  { title: "Price", key: "unit_selling_price", width: 88, render: (r) => formatPkr(r.unit_selling_price) },
+  {
+    title: "Disc.",
+    key: "line_discount",
+    width: 110,
+    render: (row) => {
+      const promo = scheduledPromoOnCart.value;
+      if (!promo || !lineMatchesPromo(promo, row)) {
+        return h("span", { class: "pos-line-disc-none" }, "—");
+      }
+      const rule = formatLinePromoRule(promo, row, formatPkr);
+      const amt = computeLineScheduledDiscountPkr(promo, row, items.value);
+      if (amt <= 0) return h("span", { class: "pos-line-disc-none" }, "—");
+      return h("div", { class: "pos-line-disc" }, [
+        h("span", { class: "pos-line-disc-rule" }, rule),
+        h("span", { class: "pos-line-disc-amt" }, `−${formatPkr(amt)}`),
+      ]);
+    },
+  },
   {
     title: "Qty",
     key: "quantity",
@@ -513,12 +530,12 @@ function holdOrder() {
 
 function newOrder() {
   cartStore.newSaleTab();
-  cartStore.syncScheduledDiscount(activeScheduledPromo.value, subtotal.value);
+  cartStore.syncScheduledDiscount(activeScheduledPromo.value, items.value);
 }
 
 function cancelCart() {
   cartStore.clearActiveCart();
-  cartStore.syncScheduledDiscount(activeScheduledPromo.value, subtotal.value);
+  cartStore.syncScheduledDiscount(activeScheduledPromo.value, items.value);
   cashReceived.value = 0;
   message.info("Cart cleared");
   returnToScanField();
@@ -751,7 +768,7 @@ watch(
 );
 
 watch(activeCartId, () => {
-  cartStore.syncScheduledDiscount(activeScheduledPromo.value, subtotal.value);
+  cartStore.syncScheduledDiscount(activeScheduledPromo.value, items.value);
 });
 
 watch(subtotal, () => {
@@ -761,7 +778,6 @@ watch(subtotal, () => {
 onMounted(() => {
   layoutStore.applyRouteSidebar("pos");
   window.addEventListener("keydown", onPosKeyDown, true);
-  document.addEventListener("visibilitychange", onCatalogVisibility);
   window.addEventListener(PRODUCT_CATALOG_UPDATED, onGlobalCatalogUpdated);
   cartStore.init();
   refreshPosCatalog();
@@ -771,7 +787,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener("keydown", onPosKeyDown, true);
-  document.removeEventListener("visibilitychange", onCatalogVisibility);
   window.removeEventListener(PRODUCT_CATALOG_UPDATED, onGlobalCatalogUpdated);
   clearTimeout(lookupTimer);
 });
@@ -879,9 +894,14 @@ onUnmounted(() => {
         :row-key="(row) => row.lineId"
         :columns="itemColumns"
         :data="displayItems"
-        :row-class-name="() => 'pos-cart-row'"
+        :row-class-name="(row) => {
+          const promo = scheduledPromoOnCart;
+          const on = promo && lineMatchesPromo(promo, row);
+          return on ? 'pos-cart-row pos-cart-row--disc' : 'pos-cart-row';
+        }"
         size="medium"
         striped
+        :scroll-x="720"
       />
 
       <div class="pos-checkout">
@@ -1122,6 +1142,28 @@ onUnmounted(() => {
   font-weight: 700;
   color: #111827;
   font-size: 15px;
+}
+.pos-line-disc {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.2;
+}
+.pos-line-disc-rule {
+  font-size: 12px;
+  font-weight: 700;
+  color: #92400e;
+}
+.pos-line-disc-amt {
+  font-size: 13px;
+  font-weight: 700;
+  color: #b45309;
+}
+.pos-line-disc-none {
+  color: #9ca3af;
+}
+.pos-table :deep(.pos-cart-row--disc td) {
+  background: #fffbeb !important;
 }
 .pos-table :deep(.n-data-table-th) {
   font-weight: 700;

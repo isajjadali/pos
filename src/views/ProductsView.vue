@@ -19,6 +19,7 @@ import {
 } from "naive-ui";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
 import ProductBulkCreateModal from "../components/ProductBulkCreateModal.vue";
+import ProductBulkEditModal from "../components/ProductBulkEditModal.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { formatPkr, marginPercent } from "../utils/format.js";
@@ -113,7 +114,35 @@ const newCategoryName = ref("");
 
 const showModal = ref(false);
 const showBulkCreate = ref(false);
+const showBulkEdit = ref(false);
 const editing = ref(null);
+
+const selectedProductsForBulkEdit = computed(() => {
+  const keys = new Set(checkedRowKeys.value);
+  return rows.value.filter((r) => keys.has(r.id));
+});
+
+function openBulkEdit() {
+  if (!checkedRowKeys.value.length) {
+    message.warning("Select at least one product to edit");
+    return;
+  }
+  showBulkEdit.value = true;
+}
+
+async function onBulkEditUpdated() {
+  checkedRowKeys.value = [];
+  await reloadTableAndCatalog();
+}
+
+function onVendorCreatedFromBulk(vendor) {
+  if (!vendor?.id) return;
+  if (vendorOptions.value.some((o) => o.value === vendor.id)) return;
+  vendorOptions.value = [
+    ...vendorOptions.value,
+    { label: vendor.name, value: vendor.id },
+  ].sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+}
 const saving = ref(false);
 const isCreate = computed(() => !editing.value?.id);
 
@@ -660,6 +689,13 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
       </NButton>
       <NButton
         v-if="canManageProducts"
+        :disabled="!supabaseConfigured || !checkedRowKeys.length"
+        @click="openBulkEdit"
+      >
+        Bulk edit{{ checkedRowKeys.length ? ` (${checkedRowKeys.length})` : "" }}
+      </NButton>
+      <NButton
+        v-if="canManageProducts"
         type="error"
         :disabled="!supabaseConfigured || !checkedRowKeys.length"
         @click="confirmBulkDelete"
@@ -808,6 +844,15 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
       :vendor-options="vendorOptions"
       :category-options="categoryOptions"
       @created="reloadTableAndCatalog"
+      @vendor-created="onVendorCreatedFromBulk"
+    />
+    <ProductBulkEditModal
+      v-model:show="showBulkEdit"
+      :products="selectedProductsForBulkEdit"
+      :vendor-options="vendorOptions"
+      :category-options="categoryOptions"
+      @updated="onBulkEditUpdated"
+      @vendor-created="onVendorCreatedFromBulk"
     />
   </div>
 </template>

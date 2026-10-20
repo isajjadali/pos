@@ -13,12 +13,20 @@ import {
   NSwitch,
   NSpace,
   NText,
+  NSelect,
+  NRadioGroup,
+  NRadio,
   useMessage,
   useDialog,
 } from "naive-ui";
+import { storeToRefs } from "pinia";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { formatPkr } from "../utils/format.js";
-import { formatScheduledPromoRule, scheduledPromoUsesPercent } from "../utils/scheduledDiscount.js";
+import {
+  formatScheduledPromoRule,
+  formatScheduledPromoScope,
+  scheduledPromoUsesPercent,
+} from "../utils/scheduledDiscount.js";
 import {
   localDateIso,
   listScheduledSaleDiscounts,
@@ -26,9 +34,13 @@ import {
   updateScheduledSaleDiscount,
   deleteScheduledSaleDiscount,
 } from "../services/scheduledDiscounts.js";
+import { useProductCacheStore, refreshProductCatalog } from "../stores/productCache.js";
 
 const message = useMessage();
 const dialog = useDialog();
+const productCache = useProductCacheStore();
+const { activeProducts } = storeToRefs(productCache);
+
 const rows = ref([]);
 const loading = ref(false);
 const modalOpen = ref(false);
@@ -37,14 +49,48 @@ const editingId = ref(null);
 
 const today = localDateIso();
 
-const form = ref({
-  name: "",
-  discount_amount: 0,
-  discount_percent: 0,
-  start_date: today,
-  end_date: today,
-  is_active: true,
-});
+const scopeOptions = [
+  { label: "All products (whole order)", value: "all" },
+  { label: "By unit price", value: "by_price" },
+  { label: "Specific products", value: "specific" },
+];
+
+const priceOpOptions = [
+  { label: "≤ Less than or equal to", value: "lte" },
+  { label: "≥ Greater than or equal to", value: "gte" },
+];
+
+function emptyForm() {
+  return {
+    name: "",
+    discount_amount: 0,
+    discount_percent: 10,
+    start_date: today,
+    end_date: today,
+    is_active: true,
+    product_scope: "all",
+    price_op: "lte",
+    price_threshold: 0,
+    product_ids: [],
+  };
+}
+
+const form = ref(emptyForm());
+
+const productSelectOptions = computed(() =>
+  (activeProducts.value ?? [])
+    .slice()
+    .sort((a, b) =>
+      String(a.name ?? "").localeCompare(String(b.name ?? ""), undefined, {
+        sensitivity: "base",
+        numeric: true,
+      })
+    )
+    .map((p) => ({
+      label: `${p.external_product_id ? `${p.external_product_id} · ` : ""}${p.name} (${formatPkr(p.selling_price)})`,
+      value: p.id,
+    }))
+);
 
 const startPicker = computed({
   get: () => dateToPicker(form.value.start_date),
@@ -97,8 +143,14 @@ const columns = [
         const amt = Number(r.discount_amount) > 0 ? ` (PKR ignored)` : "";
         return `${r.discount_percent}%${amt}`;
       }
-      return formatScheduledPromoRule(r, formatPkr);
+      return formatScheduledPromoRule(r, formatPkr).split(" · ")[0];
     },
+  },
+  {
+    title: "Applies to",
+    key: "scope",
+    ellipsis: { tooltip: true },
+    render: (r) => formatScheduledPromoScope(r, formatPkr),
   },
   { title: "Dates", key: "dates", render: (r) => formatRange(r) },
   { title: "Status", key: "status", render: (r) => statusLabel(r) },
@@ -124,19 +176,13 @@ const columns = [
 
 function openCreate() {
   editingId.value = null;
-  form.value = {
-    name: "",
-    discount_amount: 0,
-    discount_percent: 10,
-    start_date: today,
-    end_date: today,
-    is_active: true,
-  };
+  form.value = emptyForm();
   modalOpen.value = true;
 }
 
 function openEdit(row) {
   editingId.value = row.id;
+  const scope = String(row.product_scope ?? "all").toLowerCase();
   form.value = {
     name: row.name ?? "",
     discount_amount: Number(row.discount_amount) || 0,
@@ -144,6 +190,10 @@ function openEdit(row) {
     start_date: row.start_date,
     end_date: row.end_date,
     is_active: row.is_active !== false,
+    product_scope: scope === "by_price" || scope === "specific" ? scope : "all",
+    price_op: row.price_op === "gte" ? "gte" : "lte",
+    price_threshold: Number(row.price_threshold) || 0,
+    product_ids: Array.isArray(row.product_ids) ? [...row.product_ids] : [],
   };
   modalOpen.value = true;
 }
@@ -173,6 +223,16 @@ async function save() {
   const amt = Number(form.value.discount_amount) || 0;
   if (pct <= 0 && amt <= 0) {
     message.warning("Set a discount percent or a fixed PKR amount");
+    return;
+  }
+  if (form.value.product_scope === "by_price") {
+    if (!form.value.price_op) {
+      message.warning("Choose ≤ or ≥ for the price rule");
+      return;
+    }
+  }
+  if (form.value.product_scope === "specific" && !form.value.product_ids?.length) {
+    message.warning("Select at least one product");
     return;
   }
   saving.value = true;
@@ -211,15 +271,21 @@ function confirmDelete(row) {
   });
 }
 
-onMounted(load);
+onMounted(async () => {
+  productCache.hydrateFromStorage();
+  if (supabaseConfigured && !activeProducts.value.length) {
+    refreshProductCatalog().catch(() => {});
+  }
+  await load();
+});
 </script>
 
 <template>
   <NCard title="Scheduled sale discounts" class="scheduled-discounts-card">
     <NText depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
-      During the date range, POS applies the discount on every new sale automatically. If percent is
-      set, it is used (even when PKR amount is also filled); otherwise the fixed PKR amount applies.
-      Percent discounts update as the cart subtotal changes. Cashiers can remove it per sale.
+      During the date range, POS applies the discount automatically. Choose all products (whole
+      order), a unit-price rule (≤ / ≥), or a specific product list. If percent is set, it wins over
+      PKR amount. Cashiers can remove it per sale.
     </NText>
     <NSpace style="margin-bottom: 12px">
       <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
@@ -233,7 +299,7 @@ onMounted(load);
         :loading="loading"
         size="small"
         :bordered="false"
-        :scroll-x="640"
+        :scroll-x="780"
       />
     </div>
 
@@ -241,12 +307,70 @@ onMounted(load);
       v-model:show="modalOpen"
       preset="card"
       :title="editingId ? 'Edit scheduled discount' : 'New scheduled discount'"
-      style="width: min(440px, 96vw)"
+      style="width: min(520px, 96vw)"
     >
       <NForm label-placement="top">
         <NFormItem label="Label (optional)">
           <NInput v-model:value="form.name" placeholder="e.g. Eid week sale" />
         </NFormItem>
+
+        <NFormItem label="Applies to">
+          <NRadioGroup v-model:value="form.product_scope" name="product_scope">
+            <NSpace vertical :size="6">
+              <NRadio v-for="o in scopeOptions" :key="o.value" :value="o.value">
+                {{ o.label }}
+              </NRadio>
+            </NSpace>
+          </NRadioGroup>
+        </NFormItem>
+
+        <template v-if="form.product_scope === 'by_price'">
+          <NFormItem label="Unit price rule">
+            <NSpace style="width: 100%" :wrap="false">
+              <NSelect
+                v-model:value="form.price_op"
+                :options="priceOpOptions"
+                style="width: 220px; flex-shrink: 0"
+              />
+              <NInputNumber
+                v-model:value="form.price_threshold"
+                :min="0"
+                placeholder="Amount (PKR)"
+                style="flex: 1; min-width: 120px"
+              />
+            </NSpace>
+          </NFormItem>
+          <NText depth="3" style="font-size: 12px; display: block; margin: -8px 0 12px">
+            Discount applies only to cart lines whose unit sale price matches this rule.
+          </NText>
+        </template>
+
+        <template v-else-if="form.product_scope === 'specific'">
+          <NFormItem label="Products">
+            <NSelect
+              v-model:value="form.product_ids"
+              :options="productSelectOptions"
+              multiple
+              filterable
+              clearable
+              placeholder="Select products"
+              style="width: 100%"
+              :max-tag-count="3"
+            />
+          </NFormItem>
+          <NText depth="3" style="font-size: 12px; display: block; margin: -8px 0 12px">
+            Discount applies only to the selected products in the cart.
+          </NText>
+        </template>
+
+        <NText
+          v-else
+          depth="3"
+          style="font-size: 12px; display: block; margin: -4px 0 12px"
+        >
+          Discount applies to the whole order subtotal.
+        </NText>
+
         <NFormItem label="Discount percent (%)">
           <NInputNumber
             v-model:value="form.discount_percent"
@@ -260,7 +384,8 @@ onMounted(load);
           <NInputNumber v-model:value="form.discount_amount" :min="0" style="width: 100%" />
         </NFormItem>
         <NText depth="3" style="font-size: 12px; display: block; margin: -8px 0 12px">
-          Percent &gt; 0 uses percent of subtotal. Both filled → percent only. Only PKR → fixed amount.
+          Percent &gt; 0 uses percent of the eligible total. Both filled → percent only. Only PKR →
+          fixed amount (capped at eligible total).
         </NText>
         <NFormItem label="Start date">
           <NDatePicker v-model:value="startPicker" type="date" style="width: 100%" />

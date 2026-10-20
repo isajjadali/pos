@@ -169,8 +169,12 @@ export const usePosCartStore = defineStore("posCart", () => {
     }
   }
 
-  /** Apply active date-range promo to the current tab unless cashier removed it. */
-  function syncScheduledDiscount(promo, subtotal = 0) {
+  /**
+   * Apply active date-range promo to the current tab unless cashier removed it.
+   * @param {object|null} promo
+   * @param {number|Array} [subtotalOrItems] prefer cart items so price/specific scopes work
+   */
+  function syncScheduledDiscount(promo, subtotalOrItems = 0) {
     const cart = activeCart.value;
     if (!cart || cart.scheduledDiscountDismissed) return;
 
@@ -183,7 +187,8 @@ export const usePosCartStore = defineStore("posCart", () => {
       return;
     }
 
-    const amt = computeScheduledDiscountPkr(promo, subtotal);
+    const base = Array.isArray(subtotalOrItems) ? subtotalOrItems : cart.items;
+    const amt = computeScheduledDiscountPkr(promo, base);
     const samePromo = cart.scheduledDiscountId === promo.id;
     if (samePromo && moneyClose(cart.discount, amt)) return;
 

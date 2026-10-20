@@ -1,23 +1,41 @@
 import { ref, onMounted, onUnmounted } from "vue";
-import { useLayoutStore } from "../stores/layout.js";
 
 export const MOBILE_BREAKPOINT_PX = 768;
 
+function readIsMobile() {
+  if (typeof window === "undefined") return false;
+  return window.innerWidth < MOBILE_BREAKPOINT_PX;
+}
+
 export function useMobileShell() {
-  const isMobile = ref(false);
-  const layout = useLayoutStore();
+  // Init from current width immediately so sidebar doesn't flash desktop→mobile
+  const isMobile = ref(readIsMobile());
+  let resizeTimer = null;
 
   function sync() {
-    isMobile.value = window.innerWidth < MOBILE_BREAKPOINT_PX;
+    // Ignore resize noise while tab is in background (common on Windows focus switch)
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return;
+    }
+    const next = readIsMobile();
+    if (next !== isMobile.value) {
+      isMobile.value = next;
+    }
+  }
+
+  function onResize() {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(sync, 150);
   }
 
   onMounted(() => {
     sync();
-    window.addEventListener("resize", sync, { passive: true });
+    window.addEventListener("resize", onResize, { passive: true });
   });
 
   onUnmounted(() => {
-    window.removeEventListener("resize", sync);
+    if (resizeTimer) clearTimeout(resizeTimer);
+    window.removeEventListener("resize", onResize);
   });
 
   return { isMobile, sync };

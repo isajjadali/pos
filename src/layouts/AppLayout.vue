@@ -101,8 +101,9 @@ watch(
   }
 );
 
-watch(isMobile, (mobile) => {
-  if (mobile) closeMobileNav();
+watch(isMobile, (mobile, wasMobile) => {
+  // Only close drawer when actually crossing into mobile — avoid focus/resize flicker
+  if (mobile && wasMobile === false) closeMobileNav();
 });
 
 const siderCollapsedBinding = computed({

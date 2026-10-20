@@ -14,6 +14,7 @@ import {
 } from "naive-ui";
 import { formatPkr } from "../utils/format.js";
 import { previewBulkExternalProductIds, createProductsBulk } from "../services/products.js";
+import CreatableVendorSelect from "./CreatableVendorSelect.vue";
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -21,7 +22,7 @@ const props = defineProps({
   categoryOptions: { type: Array, default: () => [] },
 });
 
-const emit = defineEmits(["update:show", "created"]);
+const emit = defineEmits(["update:show", "created", "vendor-created"]);
 
 const message = useMessage();
 
@@ -111,6 +112,10 @@ async function goToReview() {
   const rows = filledDraftRows.value;
   if (!rows.length) {
     message.warning("Add at least one product with a name");
+    return;
+  }
+  if (String(vendorId.value || "").startsWith("__pending__")) {
+    message.warning("Wait a moment — new vendor is still being created");
     return;
   }
   const needsVendor = rows.some((r) => !String(r.external_product_id ?? "").trim());
@@ -204,13 +209,12 @@ function close() {
         next row. Leave product ID empty for auto IDs (same as Add product).
       </NText>
       <NSpace style="margin-bottom: 12px" wrap>
-        <NSelect
+        <CreatableVendorSelect
           v-model:value="vendorId"
           :options="vendorOptions"
-          placeholder="Vendor (for auto IDs)"
-          clearable
-          filterable
-          style="width: 240px"
+          placeholder="Vendor — type name, Enter/Tab to create"
+          style="width: 280px"
+          @vendor-created="(v) => emit('vendor-created', v)"
         />
         <NSelect
           v-model:value="categoryId"
