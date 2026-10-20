@@ -26,6 +26,18 @@ export function rowNumberColumn(page = 1, pageSize = 20) {
   };
 }
 
+/**
+ * Naive UI pagination `prefix` — shows range + total (e.g. "1–20 of 150").
+ * @param {{ startIndex?: number, endIndex?: number, itemCount?: number }} info
+ */
+export function paginationTotalPrefix(info = {}) {
+  const total = Math.max(0, Number(info.itemCount) || 0);
+  if (total <= 0) return "Total 0";
+  const start = Math.max(1, (Number(info.startIndex) || 0) + 1);
+  const end = Math.min(total, Math.max(start, Number(info.endIndex) || 0));
+  return `${start}–${end} of ${total}`;
+}
+
 export function compareStrings(a, b) {
   return String(a ?? "").localeCompare(String(b ?? ""), undefined, {
     sensitivity: "base",

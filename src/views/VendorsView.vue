@@ -24,7 +24,7 @@ import {
   updateVendor,
   deleteVendor,
 } from "../services/vendors.js";
-import { rowNumberColumn, tableSorter } from "../utils/tableColumns.js";
+import { rowNumberColumn, tableSorter, paginationTotalPrefix } from "../utils/tableColumns.js";
 import { toTitleCase } from "../utils/titleCase.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
 
@@ -55,6 +55,7 @@ function clearFilters() {
   sortKey.value = null;
   sortOrder.value = null;
   page.value = 1;
+  checkedRowKeys.value = [];
 }
 const summary = ref({ vendorTotal: 0, withProducts: 0, withoutProducts: 0 });
 
@@ -278,22 +279,26 @@ watch(search, () => {
   if (routeSyncing.value) return;
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
+    checkedRowKeys.value = [];
     page.value = 1;
     load();
   }, 300);
 });
 watch(activeOnly, () => {
   if (routeSyncing.value) return;
+  checkedRowKeys.value = [];
   page.value = 1;
   load();
 });
 watch(productFilter, () => {
   if (routeSyncing.value) return;
+  checkedRowKeys.value = [];
   page.value = 1;
   load();
 });
 watch([page, pageSize, sortKey, sortOrder], () => {
   if (routeSyncing.value) return;
+  checkedRowKeys.value = [];
   load();
 });
 
@@ -351,6 +356,7 @@ onMounted(load);
         itemCount: total,
         showSizePicker: true,
         pageSizes: [10, 20, 50],
+        prefix: paginationTotalPrefix,
         onUpdatePage: onPageChange,
         onUpdatePageSize: onPageSizeChange,
       }"

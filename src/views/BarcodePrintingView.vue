@@ -20,7 +20,12 @@ import { listProductsForPrinting, reconcilePrint, listPrintJobs } from "../servi
 import { getSettings } from "../services/settings.js";
 import { buildBatchZpl } from "../utils/zebraZpl.js";
 import { resolveBrowserPrintBase, sendZplToZebra } from "../utils/zebraBrowserPrint.js";
-import { rowNumberColumn, tableSorter, sortRowsByColumn } from "../utils/tableColumns.js";
+import {
+  rowNumberColumn,
+  tableSorter,
+  sortRowsByColumn,
+  paginationTotalPrefix,
+} from "../utils/tableColumns.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
 
 const labelSize = ref({ w: 50, h: 30 });
@@ -184,7 +189,7 @@ const pagination = computed(() => ({
   itemCount: sortedFilteredRows.value.length,
   showSizePicker: true,
   pageSizes: [20, 50, 100],
-  prefix: ({ itemCount }) => `${itemCount} products`,
+  prefix: paginationTotalPrefix,
   onUpdatePage: (p) => {
     page.value = p;
   },

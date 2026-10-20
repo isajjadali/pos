@@ -9,7 +9,7 @@ import { formatPkr } from "../utils/format.js";
 import { getSettings } from "../services/settings.js";
 import { printReceipt } from "../utils/receiptPrint.js";
 import { usePermissions } from "../composables/usePermissions.js";
-import { rowNumberColumn } from "../utils/tableColumns.js";
+import { rowNumberColumn, paginationTotalPrefix } from "../utils/tableColumns.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
 
 const message = useMessage();
@@ -167,6 +167,7 @@ function onPageSizeChange(s) {
 }
 
 watch([page, pageSize], () => {
+  checkedRowKeys.value = [];
   if (routeSyncing.value) return;
   load();
 });
@@ -203,6 +204,7 @@ onMounted(load);
         itemCount: total,
         showSizePicker: true,
         pageSizes: [20, 50, 100],
+        prefix: paginationTotalPrefix,
         onUpdatePage: onPageChange,
         onUpdatePageSize: onPageSizeChange,
       }"

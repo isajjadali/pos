@@ -18,6 +18,11 @@ const routes = [
       { path: "", name: "dashboard", component: () => import("../views/DashboardView.vue") },
       { path: "pos", name: "pos", component: () => import("../views/PosView.vue") },
       { path: "products", name: "products", component: () => import("../views/ProductsView.vue") },
+      {
+        path: "price-groups",
+        name: "price-groups",
+        component: () => import("../views/PriceGroupsView.vue"),
+      },
       { path: "import", name: "import", component: () => import("../views/ImportProductsView.vue") },
       { path: "inventory", name: "inventory", component: () => import("../views/InventoryView.vue") },
       { path: "barcodes", name: "barcodes", component: () => import("../views/BarcodePrintingView.vue") },

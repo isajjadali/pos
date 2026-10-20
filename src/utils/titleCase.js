@@ -33,8 +33,12 @@ export function vendorInitialsPrefix(vendorName) {
 
   if (!raw.length) return "XX";
 
-  const core = raw.filter((t) => !softSuffix.has(t.toLowerCase()));
-  const tokens = core.length >= 1 ? core : raw;
+  // Drop soft suffixes only when ≥2 solid words remain
+  // ("Al Rehman International" → AR). Keep them when needed
+  // ("Hashmi Traders" → HT, not HA from "Hashmi" alone).
+  let core = raw.filter((t) => !softSuffix.has(t.toLowerCase()));
+  if (core.length < 2) core = raw;
+  const tokens = core;
 
   if (tokens.length === 1) {
     return tokens[0].slice(0, 2).toUpperCase();

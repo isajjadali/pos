@@ -38,7 +38,12 @@ import { receiveStock, setProductStock } from "../services/inventory.js";
 import { shouldBlockShortcut } from "../utils/hotkeys.js";
 import { refreshProductCatalog } from "../services/productCatalog.js";
 import { usePermissions } from "../composables/usePermissions.js";
-import { rowNumberColumn, tableSorter, compareStrings } from "../utils/tableColumns.js";
+import {
+  rowNumberColumn,
+  tableSorter,
+  compareStrings,
+  paginationTotalPrefix,
+} from "../utils/tableColumns.js";
 import { toTitleCase } from "../utils/titleCase.js";
 import { formatProductTagLabel, normalizeProductTags } from "../utils/productTags.js";
 import { isProductTagsDbReady, listProductTagOptions } from "../services/productTags.js";
@@ -82,6 +87,12 @@ function clearFilters() {
   sortKey.value = null;
   sortOrder.value = null;
   page.value = 1;
+  checkedRowKeys.value = [];
+}
+
+/** Drop stale selections when the list context changes (filters / page). */
+function clearRowSelection() {
+  checkedRowKeys.value = [];
 }
 const checkedRowKeys = ref([]);
 
@@ -576,6 +587,7 @@ function onPageSizeChange(s) {
 
 watch([vendorFilter, categoryFilter, tagFilter, lowStockOnly, activeOnly], () => {
   if (routeSyncing.value) return;
+  clearRowSelection();
   page.value = 1;
   load();
 });
@@ -585,6 +597,7 @@ watch(search, () => {
   if (routeSyncing.value) return;
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
+    clearRowSelection();
     page.value = 1;
     load();
   }, 300);
@@ -592,6 +605,7 @@ watch(search, () => {
 
 watch([page, pageSize, sortKey, sortOrder], () => {
   if (routeSyncing.value) return;
+  clearRowSelection();
   load();
 });
 
@@ -726,6 +740,7 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
         itemCount: total,
         showSizePicker: true,
         pageSizes: [10, 20, 50, 100],
+        prefix: paginationTotalPrefix,
         onUpdatePage: onPageChange,
         onUpdatePageSize: onPageSizeChange,
       }"
