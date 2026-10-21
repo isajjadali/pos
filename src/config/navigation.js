@@ -12,13 +12,20 @@ import {
   PricetagOutline,
   BagHandleOutline,
 } from "@vicons/ionicons5";
+import { FEATURE_SHOPIFY } from "./features.js";
 
 export const NAV_ITEMS = [
   { label: "Dashboard", key: "dashboard", icon: HomeOutline, adminOnly: true },
   { label: "POS / New Sale", key: "pos", icon: CartOutline, adminOnly: false },
   { label: "Products", key: "products", icon: CubeOutline, adminOnly: false },
   { label: "Price groups", key: "price-groups", icon: PricetagOutline, adminOnly: true },
-  { label: "Shopify Orders", key: "shopify-orders", icon: BagHandleOutline, adminOnly: true },
+  {
+    label: "Shopify Orders",
+    key: "shopify-orders",
+    icon: BagHandleOutline,
+    adminOnly: true,
+    feature: "shopify",
+  },
   { label: "Import Products", key: "import", icon: CloudUploadOutline, adminOnly: true },
   { label: "Inventory", key: "inventory", icon: LayersOutline, adminOnly: true },
   { label: "Barcode Printing", key: "barcodes", icon: BarcodeOutline, adminOnly: true },
@@ -28,12 +35,17 @@ export const NAV_ITEMS = [
   { label: "Settings", key: "settings", icon: SettingsOutline, adminOnly: true },
 ];
 
+function featureEnabled(item) {
+  if (item.feature === "shopify") return FEATURE_SHOPIFY;
+  return true;
+}
+
 export const ADMIN_ONLY_ROUTES = new Set(
   NAV_ITEMS.filter((i) => i.adminOnly).map((i) => i.key)
 );
 
 export function visibleNavItems(isAdmin) {
-  return NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
+  return NAV_ITEMS.filter((item) => (!item.adminOnly || isAdmin) && featureEnabled(item));
 }
 
 export function navRouteKeysForUser(isAdmin) {

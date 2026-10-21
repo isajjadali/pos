@@ -1,9 +1,17 @@
 import { requireSupabase } from "../lib/supabase.js";
 import { invokeEdgeFunction } from "../utils/edgeFunction.js";
+import { FEATURE_SHOPIFY } from "../config/features.js";
 
 const BATCH = 12;
 
+function requireShopifyFeature() {
+  if (!FEATURE_SHOPIFY) {
+    throw new Error("Shopify feature is disabled (set VITE_FEATURE_SHOPIFY=true to enable)");
+  }
+}
+
 export async function shopifyTestConnection(shopDomain) {
+  requireShopifyFeature();
   const sb = requireSupabase();
   return invokeEdgeFunction(sb, "shopify-sync", {
     action: "test_connection",
@@ -12,6 +20,7 @@ export async function shopifyTestConnection(shopDomain) {
 }
 
 export async function shopifySaveSettings(payload) {
+  requireShopifyFeature();
   const sb = requireSupabase();
   return invokeEdgeFunction(sb, "shopify-sync", {
     action: "save_settings",
@@ -26,6 +35,7 @@ export async function shopifySaveSettings(payload) {
  * @param {{ onProgress?: (info: { done: number, total: number, batch: number }) => void }} [opts]
  */
 export async function shopifyPushAll(opts = {}) {
+  requireShopifyFeature();
   const sb = requireSupabase();
   let offset = 0;
   let total = null;
@@ -53,6 +63,7 @@ export async function shopifyPushAll(opts = {}) {
 }
 
 export async function shopifyPushOne(productId) {
+  requireShopifyFeature();
   const sb = requireSupabase();
   return invokeEdgeFunction(sb, "shopify-sync", {
     action: "push_one",
@@ -65,6 +76,7 @@ export async function shopifyPushOne(productId) {
  * @param {{ onProgress?: (info: { done: number, total: number, batch: number }) => void }} [opts]
  */
 export async function shopifyPullStock(opts = {}) {
+  requireShopifyFeature();
   const sb = requireSupabase();
   let offset = 0;
   let total = null;
@@ -91,12 +103,14 @@ export async function shopifyPullStock(opts = {}) {
 }
 
 export async function shopifyRegisterWebhooks() {
+  requireShopifyFeature();
   const sb = requireSupabase();
   return invokeEdgeFunction(sb, "shopify-sync", { action: "register_webhooks" });
 }
 
 /** Fire-and-forget inventory adjust after a POS sale (pieces delta, usually negative). */
 export async function shopifyInventoryAdjust(productId, delta) {
+  if (!FEATURE_SHOPIFY) return { ok: true, skipped: true, reason: "feature_off" };
   const sb = requireSupabase();
   try {
     return await invokeEdgeFunction(sb, "shopify-sync", {
@@ -111,6 +125,7 @@ export async function shopifyInventoryAdjust(productId, delta) {
 }
 
 export async function shopifyNotifySaleLines(lines) {
+  if (!FEATURE_SHOPIFY) return;
   const list = Array.isArray(lines) ? lines : [];
   await Promise.all(
     list.map((line) => {
@@ -125,6 +140,7 @@ export async function shopifyNotifySaleLines(lines) {
 }
 
 export async function shopifyOrdersList({ query = "", first = 25 } = {}) {
+  requireShopifyFeature();
   const sb = requireSupabase();
   return invokeEdgeFunction(sb, "shopify-sync", {
     action: "orders_list",
@@ -134,6 +150,7 @@ export async function shopifyOrdersList({ query = "", first = 25 } = {}) {
 }
 
 export async function shopifyOrderGet(orderId) {
+  requireShopifyFeature();
   const sb = requireSupabase();
   return invokeEdgeFunction(sb, "shopify-sync", {
     action: "order_get",
@@ -143,6 +160,7 @@ export async function shopifyOrderGet(orderId) {
 
 /** Poll Shopify orders → insert events + adjust stock (webhook fallback). */
 export async function shopifyOrdersPollSync() {
+  if (!FEATURE_SHOPIFY) return { ok: true, skipped: true, newOrders: [] };
   const sb = requireSupabase();
   return invokeEdgeFunction(sb, "shopify-sync", {
     action: "orders_poll_sync",
@@ -151,6 +169,7 @@ export async function shopifyOrdersPollSync() {
 }
 
 export async function shopifySetVariantPrice(productId, price) {
+  requireShopifyFeature();
   const sb = requireSupabase();
   return invokeEdgeFunction(sb, "shopify-sync", {
     action: "variant_set_price",
@@ -160,6 +179,7 @@ export async function shopifySetVariantPrice(productId, price) {
 }
 
 export async function shopifyGetVariantPrice(productId) {
+  requireShopifyFeature();
   const sb = requireSupabase();
   return invokeEdgeFunction(sb, "shopify-sync", {
     action: "variant_get_price",
@@ -168,6 +188,7 @@ export async function shopifyGetVariantPrice(productId) {
 }
 
 export async function shopifyPushPrices(productIds) {
+  requireShopifyFeature();
   const sb = requireSupabase();
   return invokeEdgeFunction(sb, "shopify-sync", {
     action: "push_prices_batch",
@@ -179,6 +200,7 @@ export async function shopifyPushPrices(productIds) {
  * Stage → browser POST to Shopify → finish attach. Never stores file on POS.
  */
 export async function shopifyUploadProductImage(productId, file, opts = {}) {
+  requireShopifyFeature();
   const sb = requireSupabase();
   const filename = file.name || "image.jpg";
   const mimeType = file.type || "image/jpeg";
@@ -213,6 +235,7 @@ export async function shopifyUploadProductImage(productId, file, opts = {}) {
 }
 
 export async function listShopifyOrderEvents({ unreadOnly = false, limit = 30 } = {}) {
+  if (!FEATURE_SHOPIFY) return [];
   const sb = requireSupabase();
   let q = sb
     .from("shopify_order_events")
@@ -226,6 +249,7 @@ export async function listShopifyOrderEvents({ unreadOnly = false, limit = 30 } 
 }
 
 export async function countUnreadShopifyOrderEvents() {
+  if (!FEATURE_SHOPIFY) return 0;
   const sb = requireSupabase();
   const { count, error } = await sb
     .from("shopify_order_events")
@@ -236,6 +260,7 @@ export async function countUnreadShopifyOrderEvents() {
 }
 
 export async function markShopifyOrderEventsRead(ids) {
+  if (!FEATURE_SHOPIFY) return;
   const sb = requireSupabase();
   const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
   if (!list.length) return;
@@ -247,6 +272,7 @@ export async function markShopifyOrderEventsRead(ids) {
 }
 
 export async function markAllShopifyOrderEventsRead() {
+  if (!FEATURE_SHOPIFY) return;
   const sb = requireSupabase();
   const { error } = await sb
     .from("shopify_order_events")

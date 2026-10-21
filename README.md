@@ -20,6 +20,8 @@ See `IMPLEMENTATION.md` for feature status.
 
 ## Shopify Hub Lite (optional)
 
+**Feature flag (default OFF):** set `VITE_FEATURE_SHOPIFY=true` in `.env` and restart Vite to show Shopify UI / sync. Code stays in the repo while the flag is off.
+
 Selective hub — **not** a full Shopify Admin clone.
 
 | In this POS | Stays in Shopify Admin |

@@ -42,7 +42,9 @@ import {
   RECEIPT_FONT_OPTIONS,
 } from "../config/printFonts.js";
 import { SALE_UNIT_OPTIONS, setAppDefaultLabelUnit } from "../utils/saleUnits.js";
+import { FEATURE_SHOPIFY } from "../config/features.js";
 
+const shopifyFeatureOn = FEATURE_SHOPIFY;
 const message = useMessage();
 const layout = useLayoutStore();
 const route = useRoute();
@@ -366,7 +368,7 @@ onMounted(load);
       </NCard>
     </div>
 
-    <NCard title="Shopify sync" class="settings-full-section">
+    <NCard v-if="shopifyFeatureOn" title="Shopify sync" class="settings-full-section">
       <NText depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
         Hub Lite: stock/barcode sync, order notifications, Shopify online price + images (Shopify
         CDN only). POS unit prices stay separate; fulfill/refund stay in Shopify Admin. Scopes:

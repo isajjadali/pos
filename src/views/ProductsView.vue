@@ -43,6 +43,9 @@ import {
   shopifyPushPrices,
   shopifyUploadProductImage,
 } from "../services/shopify.js";
+import { FEATURE_SHOPIFY } from "../config/features.js";
+
+const shopifyFeatureOn = FEATURE_SHOPIFY;
 import { shouldBlockShortcut } from "../utils/hotkeys.js";
 import { refreshProductCatalog } from "../services/productCatalog.js";
 import { usePermissions } from "../composables/usePermissions.js";
@@ -324,7 +327,7 @@ const columns = computed(() => {
       render: (row) =>
         h(NSpace, { size: 6, align: "center", wrap: false }, () => [
           h("span", { style: "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%" }, row.name || "—"),
-          row.shopify_variant_id
+          shopifyFeatureOn && row.shopify_variant_id
             ? h(
                 NTag,
                 { size: "tiny", round: true, bordered: false, type: "info" },
@@ -421,7 +424,7 @@ const columns = computed(() => {
         render: (row) =>
           h(NSpace, { size: 4 }, () => [
             h(NButton, { size: "tiny", onClick: () => openEdit(row) }, () => "Edit"),
-            row.barcode
+            shopifyFeatureOn && row.barcode
               ? h(
                   NButton,
                   {
@@ -609,7 +612,10 @@ function openEdit(row) {
     shopify_variant_id: row.shopify_variant_id ?? null,
   };
   showModal.value = true;
-  if (row.shopify_variant_id || row.shopify_product_id || row.barcode) {
+  if (
+    shopifyFeatureOn &&
+    (row.shopify_variant_id || row.shopify_product_id || row.barcode)
+  ) {
     shopifyGetVariantPrice(row.id)
       .then((res) => {
         if (res?.price != null) form.value.shopify_price = Number(res.price);
@@ -739,6 +745,7 @@ async function save() {
         message.success(`Product updated.${stockMsg || ""}`.trim());
       }
       if (
+        shopifyFeatureOn &&
         form.value.shopify_price != null &&
         Number.isFinite(Number(form.value.shopify_price)) &&
         (form.value.shopify_product_id || form.value.shopify_variant_id || form.value.barcode)
@@ -920,14 +927,14 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
         Deactivate selected
       </NButton>
       <NButton
-        v-if="canManageProducts"
+        v-if="canManageProducts && shopifyFeatureOn"
         :disabled="!supabaseConfigured"
         @click="showBulkShopifyImages = true"
       >
         Shopify images
       </NButton>
       <NButton
-        v-if="canManageProducts"
+        v-if="canManageProducts && shopifyFeatureOn"
         :loading="shopifyPriceBusy"
         :disabled="!supabaseConfigured || !checkedRowKeys.length"
         @click="pushSelectedShopifyPrices"
@@ -1078,7 +1085,7 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
           <NText depth="3" style="font-size: 13px">{{ unitStockHint }}</NText>
         </NFormItem>
         <NFormItem
-          v-if="!isCreate && canManageProducts"
+          v-if="shopifyFeatureOn && !isCreate && canManageProducts"
           label="Shopify online price (PKR)"
           class="span-2"
         >
@@ -1090,7 +1097,10 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
             style="width: 100%"
           />
         </NFormItem>
-        <NFormItem v-if="!isCreate && canManageProducts" label="Shopify image">
+        <NFormItem
+          v-if="shopifyFeatureOn && !isCreate && canManageProducts"
+          label="Shopify image"
+        >
           <NSpace vertical size="small" style="width: 100%">
             <input
               type="file"
@@ -1140,7 +1150,10 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
       @updated="onBulkEditUpdated"
       @vendor-created="onVendorCreatedFromBulk"
     />
-    <ShopifyBulkImagesModal v-model:show="showBulkShopifyImages" />
+    <ShopifyBulkImagesModal
+      v-if="shopifyFeatureOn"
+      v-model:show="showBulkShopifyImages"
+    />
   </div>
 </template>
 

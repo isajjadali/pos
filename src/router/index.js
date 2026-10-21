@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from "vue-router";
 import { useAuthStore } from "../stores/auth.js";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { navRouteKeysForUser } from "../config/navigation.js";
+import { FEATURE_SHOPIFY } from "../config/features.js";
 
 const routes = [
   {
@@ -23,11 +24,15 @@ const routes = [
         name: "price-groups",
         component: () => import("../views/PriceGroupsView.vue"),
       },
-      {
-        path: "shopify-orders",
-        name: "shopify-orders",
-        component: () => import("../views/ShopifyOrdersView.vue"),
-      },
+      ...(FEATURE_SHOPIFY
+        ? [
+            {
+              path: "shopify-orders",
+              name: "shopify-orders",
+              component: () => import("../views/ShopifyOrdersView.vue"),
+            },
+          ]
+        : []),
       { path: "import", name: "import", component: () => import("../views/ImportProductsView.vue") },
       { path: "inventory", name: "inventory", component: () => import("../views/InventoryView.vue") },
       { path: "barcodes", name: "barcodes", component: () => import("../views/BarcodePrintingView.vue") },

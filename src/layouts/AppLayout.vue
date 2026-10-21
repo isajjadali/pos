@@ -26,6 +26,9 @@ import AppHotkeys from "../components/AppHotkeys.vue";
 import GlobalBarcodeScanner from "../components/GlobalBarcodeScanner.vue";
 import ShopifyOrderBell from "../components/ShopifyOrderBell.vue";
 import { useMobileShell } from "../composables/useMobileShell.js";
+import { FEATURE_SHOPIFY } from "../config/features.js";
+
+const shopifyEnabled = FEATURE_SHOPIFY;
 
 const route = useRoute();
 const { isMobile } = useMobileShell();
@@ -199,9 +202,9 @@ const mobilePageTitle = computed(() => {
         <NText depth="3" style="font-size: 12px">
           <kbd>Shift</kbd> + <kbd>?</kbd> shortcuts · <kbd>Alt</kbd> + <kbd>1</kbd>–<kbd>9</kbd> pages
         </NText>
-        <ShopifyOrderBell />
+        <ShopifyOrderBell v-if="shopifyEnabled" />
       </div>
-      <div v-if="isMobile" class="app-mobile-bell">
+      <div v-if="isMobile && shopifyEnabled" class="app-mobile-bell">
         <ShopifyOrderBell />
       </div>
       <div class="app-page">

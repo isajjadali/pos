@@ -20,6 +20,7 @@ import {
 } from "../services/shopify.js";
 import { formatPkr } from "../utils/format.js";
 import { useAuthStore } from "../stores/auth.js";
+import { FEATURE_SHOPIFY } from "../config/features.js";
 
 const router = useRouter();
 const message = useMessage();
@@ -35,7 +36,7 @@ let pollTimer = null;
 const seenIds = new Set();
 let primed = false;
 
-const show = computed(() => supabaseConfigured && auth.isAdmin);
+const show = computed(() => FEATURE_SHOPIFY && supabaseConfigured && auth.isAdmin);
 
 function playChime() {
   try {
