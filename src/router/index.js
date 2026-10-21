@@ -23,6 +23,11 @@ const routes = [
         name: "price-groups",
         component: () => import("../views/PriceGroupsView.vue"),
       },
+      {
+        path: "shopify-orders",
+        name: "shopify-orders",
+        component: () => import("../views/ShopifyOrdersView.vue"),
+      },
       { path: "import", name: "import", component: () => import("../views/ImportProductsView.vue") },
       { path: "inventory", name: "inventory", component: () => import("../views/InventoryView.vue") },
       { path: "barcodes", name: "barcodes", component: () => import("../views/BarcodePrintingView.vue") },

@@ -288,7 +288,23 @@ async function runRegisterWebhooks() {
   try {
     await updateSettings(form.value);
     const res = await shopifyRegisterWebhooks();
-    message.success(`Webhooks registered → ${res.webhookUrl || "edge function"}`);
+    const created = res.created || [];
+    const failed = created.filter((c) => c.error);
+    const ok = created.filter((c) => !c.error);
+    const already = ok.filter((c) => c.status === "already_registered").length;
+    if (failed.length) {
+      message.warning(
+        `Webhooks: ${ok.length} ok, ${failed.length} failed — ${failed
+          .map((f) => `${f.topic}: ${f.error}`)
+          .join(" | ")}`
+      );
+    } else if (already === ok.length && ok.length) {
+      message.success(`Webhooks already registered (${ok.length}) — ready to use`);
+    } else {
+      message.success(
+        `Webhooks OK (${ok.length}${already ? `, ${already} already set` : ""}) → ${res.webhookUrl || ""}`
+      );
+    }
   } catch (e) {
     message.error(e.message || "Webhook register failed");
   } finally {
@@ -352,11 +368,11 @@ onMounted(load);
 
     <NCard title="Shopify sync" class="settings-full-section">
       <NText depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
-        Sync name, barcode, and stock (pieces) by barcode. Prices stay separate; orders stay on
-        Shopify. Set Edge secrets
-        <code>SHOPIFY_CLIENT_ID</code> + <code>SHOPIFY_CLIENT_SECRET</code> from Dev Dashboard →
-        Settings (or legacy <code>SHOPIFY_ADMIN_TOKEN</code>). “Open app” in Shopify Admin is not
-        used — see README.
+        Hub Lite: stock/barcode sync, order notifications, Shopify online price + images (Shopify
+        CDN only). POS unit prices stay separate; fulfill/refund stay in Shopify Admin. Scopes:
+        products, inventory, locations, <code>read_orders</code>, <code>write_files</code>. Set Edge
+        secrets <code>SHOPIFY_CLIENT_ID</code> + <code>SHOPIFY_CLIENT_SECRET</code> (or legacy
+        <code>SHOPIFY_ADMIN_TOKEN</code>). Re-approve the app after adding scopes — see README.
       </NText>
       <NForm label-placement="top" class="form-grid-2">
         <NFormItem label="Enable inventory sync">
@@ -407,6 +423,10 @@ onMounted(load);
           Register webhooks
         </NButton>
       </NSpace>
+      <NText depth="3" style="display: block; margin-top: 10px; font-size: 12px">
+        New Shopify orders show an in-app toast + bell while this POS is open (polls every ~15s).
+        Delete/cancel on Shopify restores stock on the next poll.
+      </NText>
       <NText v-if="shopifyProgress" depth="3" style="display: block; margin-top: 10px; font-size: 13px">
         {{ shopifyProgress }}
       </NText>

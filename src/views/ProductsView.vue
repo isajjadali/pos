@@ -20,6 +20,7 @@ import {
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
 import ProductBulkCreateModal from "../components/ProductBulkCreateModal.vue";
 import ProductBulkEditModal from "../components/ProductBulkEditModal.vue";
+import ShopifyBulkImagesModal from "../components/ShopifyBulkImagesModal.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { formatPkr, marginPercent } from "../utils/format.js";
@@ -35,7 +36,13 @@ import {
   nextExternalProductId,
 } from "../services/products.js";
 import { receiveStock, setProductStock } from "../services/inventory.js";
-import { shopifyPushOne } from "../services/shopify.js";
+import {
+  shopifyPushOne,
+  shopifySetVariantPrice,
+  shopifyGetVariantPrice,
+  shopifyPushPrices,
+  shopifyUploadProductImage,
+} from "../services/shopify.js";
 import { shouldBlockShortcut } from "../utils/hotkeys.js";
 import { refreshProductCatalog } from "../services/productCatalog.js";
 import { usePermissions } from "../composables/usePermissions.js";
@@ -142,6 +149,9 @@ const newCategoryName = ref("");
 const showModal = ref(false);
 const showBulkCreate = ref(false);
 const showBulkEdit = ref(false);
+const showBulkShopifyImages = ref(false);
+const shopifyImageBusy = ref(false);
+const shopifyPriceBusy = ref(false);
 const editing = ref(null);
 
 const selectedProductsForBulkEdit = computed(() => {
@@ -200,6 +210,9 @@ function emptyForm() {
     tags: [],
     add_stock_qty: 0,
     add_stock_unit_cost: 0,
+    shopify_price: null,
+    shopify_product_id: null,
+    shopify_variant_id: null,
   };
 }
 
@@ -528,6 +541,43 @@ async function pushProductToShopify(row) {
   }
 }
 
+async function pushSelectedShopifyPrices() {
+  const ids = checkedRowKeys.value;
+  if (!ids.length) {
+    message.warning("Select products first");
+    return;
+  }
+  shopifyPriceBusy.value = true;
+  try {
+    const res = await shopifyPushPrices(ids);
+    const results = res.results || [];
+    const ok = results.filter((r) => r.ok).length;
+    const skip = results.filter((r) => r.skipped).length;
+    const err = results.filter((r) => r.error).length;
+    message.success(`Shopify prices: ${ok} updated, ${skip} skipped, ${err} failed`);
+    await load();
+  } catch (e) {
+    message.error(e.message || "Push Shopify prices failed");
+  } finally {
+    shopifyPriceBusy.value = false;
+  }
+}
+
+async function onShopifyImagePick(e) {
+  const file = e.target?.files?.[0];
+  e.target.value = "";
+  if (!file || !editing.value?.id) return;
+  shopifyImageBusy.value = true;
+  try {
+    await shopifyUploadProductImage(editing.value.id, file, { alt: form.value.name || "" });
+    message.success("Image uploaded to Shopify");
+  } catch (err) {
+    message.error(err.message || "Image upload failed");
+  } finally {
+    shopifyImageBusy.value = false;
+  }
+}
+
 function openEdit(row) {
   editing.value = row;
   form.value = {
@@ -554,8 +604,18 @@ function openEdit(row) {
     tags: [...(row.tags ?? [])],
     add_stock_qty: 0,
     add_stock_unit_cost: row.weighted_avg_cost ?? 0,
+    shopify_price: row.shopify_price ?? null,
+    shopify_product_id: row.shopify_product_id ?? null,
+    shopify_variant_id: row.shopify_variant_id ?? null,
   };
   showModal.value = true;
+  if (row.shopify_variant_id || row.shopify_product_id || row.barcode) {
+    shopifyGetVariantPrice(row.id)
+      .then((res) => {
+        if (res?.price != null) form.value.shopify_price = Number(res.price);
+      })
+      .catch(() => {});
+  }
 }
 
 function confirmBulkDeactivate() {
@@ -677,6 +737,17 @@ async function save() {
         message.success(`Product updated.${stockMsg} Received ${addQty} more unit(s).`);
       } else {
         message.success(`Product updated.${stockMsg || ""}`.trim());
+      }
+      if (
+        form.value.shopify_price != null &&
+        Number.isFinite(Number(form.value.shopify_price)) &&
+        (form.value.shopify_product_id || form.value.shopify_variant_id || form.value.barcode)
+      ) {
+        try {
+          await shopifySetVariantPrice(editing.value.id, form.value.shopify_price);
+        } catch (e) {
+          message.warning(e.message || "POS saved; Shopify price update failed");
+        }
       }
     }
     showModal.value = false;
@@ -848,6 +919,21 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
       >
         Deactivate selected
       </NButton>
+      <NButton
+        v-if="canManageProducts"
+        :disabled="!supabaseConfigured"
+        @click="showBulkShopifyImages = true"
+      >
+        Shopify images
+      </NButton>
+      <NButton
+        v-if="canManageProducts"
+        :loading="shopifyPriceBusy"
+        :disabled="!supabaseConfigured || !checkedRowKeys.length"
+        @click="pushSelectedShopifyPrices"
+      >
+        Push Shopify prices
+      </NButton>
       <NButton :disabled="!supabaseConfigured" @click="reloadTableAndCatalog">Refresh</NButton>
     </NSpace>
     <NDataTable
@@ -991,6 +1077,32 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
         <NFormItem label="Stock breakdown" class="span-3">
           <NText depth="3" style="font-size: 13px">{{ unitStockHint }}</NText>
         </NFormItem>
+        <NFormItem
+          v-if="!isCreate && canManageProducts"
+          label="Shopify online price (PKR)"
+          class="span-2"
+        >
+          <NInputNumber
+            v-model:value="form.shopify_price"
+            :min="0"
+            clearable
+            placeholder="Does not change POS prices"
+            style="width: 100%"
+          />
+        </NFormItem>
+        <NFormItem v-if="!isCreate && canManageProducts" label="Shopify image">
+          <NSpace vertical size="small" style="width: 100%">
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              :disabled="shopifyImageBusy"
+              @change="onShopifyImagePick"
+            />
+            <NText depth="3" style="font-size: 12px">
+              Uploads to Shopify only (push/link product first).
+            </NText>
+          </NSpace>
+        </NFormItem>
         <NFormItem label="Low-stock threshold">
           <NInputNumber v-model:value="form.low_stock_threshold" :min="0" :precision="0" style="width: 100%" />
         </NFormItem>
@@ -1028,6 +1140,7 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
       @updated="onBulkEditUpdated"
       @vendor-created="onVendorCreatedFromBulk"
     />
+    <ShopifyBulkImagesModal v-model:show="showBulkShopifyImages" />
   </div>
 </template>
 

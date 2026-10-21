@@ -10,6 +10,7 @@ import {
   SettingsOutline,
   PeopleOutline,
   PricetagOutline,
+  BagHandleOutline,
 } from "@vicons/ionicons5";
 
 export const NAV_ITEMS = [
@@ -17,6 +18,7 @@ export const NAV_ITEMS = [
   { label: "POS / New Sale", key: "pos", icon: CartOutline, adminOnly: false },
   { label: "Products", key: "products", icon: CubeOutline, adminOnly: false },
   { label: "Price groups", key: "price-groups", icon: PricetagOutline, adminOnly: true },
+  { label: "Shopify Orders", key: "shopify-orders", icon: BagHandleOutline, adminOnly: true },
   { label: "Import Products", key: "import", icon: CloudUploadOutline, adminOnly: true },
   { label: "Inventory", key: "inventory", icon: LayersOutline, adminOnly: true },
   { label: "Barcode Printing", key: "barcodes", icon: BarcodeOutline, adminOnly: true },

@@ -4,7 +4,7 @@ import { storeToRefs } from "pinia";
 import { useRoute, useRouter } from "vue-router";
 import { useLayoutStore } from "../stores/layout.js";
 import SalesPosLayout from "./SalesPosLayout.vue";
-import { NLayout, NLayoutSider, NLayoutContent, NMenu, NButton, NSpace, NText } from "naive-ui";
+import { NLayout, NLayoutSider, NLayoutContent, NMenu, NButton, NText } from "naive-ui";
 import {
   HomeOutline,
   CartOutline,
@@ -24,6 +24,7 @@ import { visibleNavItems } from "../config/navigation.js";
 import { getSettings } from "../services/settings.js";
 import AppHotkeys from "../components/AppHotkeys.vue";
 import GlobalBarcodeScanner from "../components/GlobalBarcodeScanner.vue";
+import ShopifyOrderBell from "../components/ShopifyOrderBell.vue";
 import { useMobileShell } from "../composables/useMobileShell.js";
 
 const route = useRoute();
@@ -152,34 +153,31 @@ const mobilePageTitle = computed(() => {
       class="app-sider"
       :class="{ 'app-sider--drawer': isMobile && mobileNavOpen }"
     >
-      <div
-        class="brand"
-        :class="{ 'brand--collapsed': siderCollapsed && !isMobile, 'brand--tap': isMobile }"
-        @click="isMobile ? toggleMobileNav() : undefined"
-      >
-        <span class="brand-mark">DW</span>
-        <strong class="brand-title">Discount World</strong>
-        <NText class="brand-sub" depth="2" style="font-size: 12px">by WABz</NText>
-      </div>
-      <NMenu
-        :collapsed="menuCollapsed"
-        :collapsed-width="64"
-        :collapsed-icon-size="22"
-        :value="activeKey"
-        :options="menuOptions"
-        @update:value="onMenuSelect"
-      />
-      <div class="sider-footer" :class="{ 'sider-footer--collapsed': menuCollapsed }">
-        <NSpace vertical>
-          <NText
-            v-if="supabaseConfigured && !menuCollapsed"
-            depth="3"
-            style="font-size: 12px; line-height: 1.35"
-          >
-            {{ auth.displayName }}
-            <br />
+      <div class="sider-inner">
+        <div
+          class="brand"
+          :class="{ 'brand--collapsed': siderCollapsed && !isMobile, 'brand--tap': isMobile }"
+          @click="isMobile ? toggleMobileNav() : undefined"
+        >
+          <span class="brand-mark">DW</span>
+          <strong class="brand-title">Discount World</strong>
+          <NText class="brand-sub" depth="2" style="font-size: 12px">by WABz</NText>
+        </div>
+        <div class="sider-menu-wrap">
+          <NMenu
+            :collapsed="menuCollapsed"
+            :collapsed-width="64"
+            :collapsed-icon-size="22"
+            :value="activeKey"
+            :options="menuOptions"
+            @update:value="onMenuSelect"
+          />
+        </div>
+        <div class="sider-footer" :class="{ 'sider-footer--collapsed': menuCollapsed }">
+          <div v-if="supabaseConfigured && !menuCollapsed" class="sider-user">
+            <span class="sider-user-name">{{ auth.displayName }}</span>
             <span class="role-pill">{{ roleLabel }}</span>
-          </NText>
+          </div>
           <NText v-if="!supabaseConfigured" depth="3" style="font-size: 12px">
             Demo mode (no Supabase)
           </NText>
@@ -187,7 +185,7 @@ const mobilePageTitle = computed(() => {
             <template #icon><NIcon :component="LogOutOutline" /></template>
             <span v-if="!menuCollapsed">Sign out</span>
           </NButton>
-        </NSpace>
+        </div>
       </div>
     </NLayoutSider>
     <NLayoutContent class="app-content" :content-style="contentStyle">
@@ -201,6 +199,10 @@ const mobilePageTitle = computed(() => {
         <NText depth="3" style="font-size: 12px">
           <kbd>Shift</kbd> + <kbd>?</kbd> shortcuts · <kbd>Alt</kbd> + <kbd>1</kbd>–<kbd>9</kbd> pages
         </NText>
+        <ShopifyOrderBell />
+      </div>
+      <div v-if="isMobile" class="app-mobile-bell">
+        <ShopifyOrderBell />
       </div>
       <div class="app-page">
         <RouterView />
@@ -215,10 +217,28 @@ const mobilePageTitle = computed(() => {
 .app-sider {
   overflow: hidden;
 }
+.app-sider :deep(.n-layout-sider-scroll-container) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
 .app-sider :deep(.n-menu-item-content) {
   overflow: hidden;
 }
+.sider-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.sider-menu-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
 .brand {
+  flex-shrink: 0;
   padding: 20px 16px 12px;
   line-height: 1.3;
   border-bottom: 1px solid #d1d5db;
@@ -250,19 +270,42 @@ const mobilePageTitle = computed(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sider-footer--collapsed {
-  left: 8px;
-  right: 8px;
-  text-align: center;
-}
 .sider-footer {
-  position: absolute;
-  bottom: 16px;
-  left: 16px;
-  right: 16px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid #e5e7eb;
+}
+.sider-footer--collapsed {
+  padding: 12px 8px 16px;
+  align-items: center;
+}
+.sider-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: #9ca3af;
+}
+.sider-user-name {
+  color: inherit;
 }
 .shortcut-bar {
   margin: -8px 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.app-mobile-bell {
+  display: flex;
+  justify-content: flex-end;
+  margin: -4px 0 8px;
 }
 .shortcut-bar kbd {
   display: inline-block;

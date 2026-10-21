@@ -390,3 +390,393 @@ export async function getInventoryAvailableAtLocation(
   const q = data.inventoryItem?.inventoryLevel?.quantities?.find((x) => x.name === "available");
   return q ? Math.floor(Number(q.quantity) || 0) : null;
 }
+
+export type ShopifyOrderSummary = {
+  id: string;
+  name: string;
+  createdAt: string;
+  financialStatus: string | null;
+  fulfillmentStatus: string | null;
+  total: string | null;
+  currency: string | null;
+  customerName: string | null;
+  lineItemCount: number;
+};
+
+export async function listOrders(
+  cfg: ShopifyConfig,
+  opts: { first?: number; query?: string } = {}
+): Promise<ShopifyOrderSummary[]> {
+  const first = Math.min(50, Math.max(1, Math.floor(Number(opts.first) || 25)));
+  const search = String(opts.query || "").trim();
+  const data = await shopifyGraphql<{
+    orders: {
+      edges: Array<{
+        node: {
+          id: string;
+          name: string;
+          createdAt: string;
+          displayFinancialStatus: string | null;
+          displayFulfillmentStatus: string | null;
+          totalPriceSet: { shopMoney: { amount: string; currencyCode: string } } | null;
+          customer: { displayName: string | null } | null;
+          lineItems: { edges: unknown[] };
+        };
+      }>;
+    };
+  }>(
+    cfg,
+    search
+      ? `query ($first: Int!, $query: String!) {
+      orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
+        edges {
+          node {
+            id
+            name
+            createdAt
+            displayFinancialStatus
+            displayFulfillmentStatus
+            totalPriceSet { shopMoney { amount currencyCode } }
+            customer { displayName }
+            lineItems(first: 1) { edges { node { id } } }
+          }
+        }
+      }
+    }`
+      : `query ($first: Int!) {
+      orders(first: $first, sortKey: CREATED_AT, reverse: true) {
+        edges {
+          node {
+            id
+            name
+            createdAt
+            displayFinancialStatus
+            displayFulfillmentStatus
+            totalPriceSet { shopMoney { amount currencyCode } }
+            customer { displayName }
+            lineItems(first: 1) { edges { node { id } } }
+          }
+        }
+      }
+    }`,
+    search ? { first, query: search } : { first }
+  );
+  return (data.orders?.edges ?? []).map((e) => {
+    const n = e.node;
+    return {
+      id: n.id,
+      name: n.name,
+      createdAt: n.createdAt,
+      financialStatus: n.displayFinancialStatus,
+      fulfillmentStatus: n.displayFulfillmentStatus,
+      total: n.totalPriceSet?.shopMoney?.amount ?? null,
+      currency: n.totalPriceSet?.shopMoney?.currencyCode ?? null,
+      customerName: n.customer?.displayName ?? null,
+      lineItemCount: n.lineItems?.edges?.length ?? 0,
+    };
+  });
+}
+
+export async function getOrder(cfg: ShopifyConfig, orderId: string) {
+  const id = String(orderId || "").trim();
+  if (!id) throw new Error("order id required");
+  const data = await shopifyGraphql<{
+    order: {
+      id: string;
+      name: string;
+      createdAt: string;
+      displayFinancialStatus: string | null;
+      displayFulfillmentStatus: string | null;
+      email: string | null;
+      phone: string | null;
+      note: string | null;
+      totalPriceSet: { shopMoney: { amount: string; currencyCode: string } } | null;
+      subtotalPriceSet: { shopMoney: { amount: string; currencyCode: string } } | null;
+      totalShippingPriceSet: { shopMoney: { amount: string; currencyCode: string } } | null;
+      customer: { displayName: string | null; email: string | null } | null;
+      shippingAddress: {
+        name: string | null;
+        address1: string | null;
+        address2: string | null;
+        city: string | null;
+        province: string | null;
+        zip: string | null;
+        phone: string | null;
+      } | null;
+      lineItems: {
+        edges: Array<{
+          node: {
+            title: string;
+            quantity: number;
+            sku: string | null;
+            variantTitle: string | null;
+            variant: { id: string; barcode: string | null } | null;
+            originalUnitPriceSet: { shopMoney: { amount: string; currencyCode: string } } | null;
+          };
+        }>;
+      };
+    } | null;
+  }>(
+    cfg,
+    `query ($id: ID!) {
+      order(id: $id) {
+        id
+        name
+        createdAt
+        displayFinancialStatus
+        displayFulfillmentStatus
+        email
+        phone
+        note
+        totalPriceSet { shopMoney { amount currencyCode } }
+        subtotalPriceSet { shopMoney { amount currencyCode } }
+        totalShippingPriceSet { shopMoney { amount currencyCode } }
+        customer { displayName email }
+        shippingAddress { name address1 address2 city province zip phone }
+        lineItems(first: 100) {
+          edges {
+            node {
+              title
+              quantity
+              sku
+              variantTitle
+              variant { id barcode }
+              originalUnitPriceSet { shopMoney { amount currencyCode } }
+            }
+          }
+        }
+      }
+    }`,
+    { id }
+  );
+  if (!data.order) throw new Error("Order not found");
+  const o = data.order;
+  return {
+    id: o.id,
+    name: o.name,
+    createdAt: o.createdAt,
+    financialStatus: o.displayFinancialStatus,
+    fulfillmentStatus: o.displayFulfillmentStatus,
+    email: o.email,
+    phone: o.phone,
+    note: o.note,
+    total: o.totalPriceSet?.shopMoney?.amount ?? null,
+    currency: o.totalPriceSet?.shopMoney?.currencyCode ?? null,
+    subtotal: o.subtotalPriceSet?.shopMoney?.amount ?? null,
+    shipping: o.totalShippingPriceSet?.shopMoney?.amount ?? null,
+    customerName: o.customer?.displayName ?? null,
+    customerEmail: o.customer?.email ?? null,
+    shippingAddress: o.shippingAddress,
+    lineItems: (o.lineItems?.edges ?? []).map((e) => ({
+      title: e.node.title,
+      quantity: e.node.quantity,
+      sku: e.node.sku,
+      variantTitle: e.node.variantTitle,
+      variantId: e.node.variant?.id ?? null,
+      barcode: e.node.variant?.barcode ?? null,
+      unitPrice: e.node.originalUnitPriceSet?.shopMoney?.amount ?? null,
+    })),
+  };
+}
+
+/** Recent orders with line items — used by poll sync when webhooks don't arrive. */
+export async function listRecentOrdersWithLines(cfg: ShopifyConfig, first = 15) {
+  const n = Math.min(25, Math.max(1, Math.floor(first)));
+  const data = await shopifyGraphql<{
+    orders: {
+      edges: Array<{
+        node: {
+          id: string;
+          name: string;
+          createdAt: string;
+          cancelledAt: string | null;
+          displayFinancialStatus: string | null;
+          displayFulfillmentStatus: string | null;
+          totalPriceSet: { shopMoney: { amount: string; currencyCode: string } } | null;
+          customer: { displayName: string | null } | null;
+          lineItems: {
+            edges: Array<{
+              node: {
+                quantity: number;
+                sku: string | null;
+                variant: { id: string; barcode: string | null } | null;
+              };
+            }>;
+          };
+        };
+      }>;
+    };
+  }>(
+    cfg,
+    `query ($first: Int!) {
+      orders(first: $first, sortKey: CREATED_AT, reverse: true) {
+        edges {
+          node {
+            id
+            name
+            createdAt
+            cancelledAt
+            displayFinancialStatus
+            displayFulfillmentStatus
+            totalPriceSet { shopMoney { amount currencyCode } }
+            customer { displayName }
+            lineItems(first: 50) {
+              edges {
+                node {
+                  quantity
+                  sku
+                  variant { id barcode }
+                }
+              }
+            }
+          }
+        }
+      }
+    }`,
+    { first: n }
+  );
+
+  return (data.orders?.edges ?? []).map((e) => {
+    const o = e.node;
+    return {
+      id: o.id,
+      name: o.name,
+      createdAt: o.createdAt,
+      cancelledAt: o.cancelledAt,
+      financialStatus: o.displayFinancialStatus,
+      fulfillmentStatus: o.displayFulfillmentStatus,
+      total: o.totalPriceSet?.shopMoney?.amount ?? null,
+      currency: o.totalPriceSet?.shopMoney?.currencyCode ?? null,
+      customerName: o.customer?.displayName ?? null,
+      lineItems: (o.lineItems?.edges ?? []).map((li) => ({
+        quantity: li.node.quantity,
+        sku: li.node.sku,
+        variant_id: li.node.variant?.id ?? null,
+        barcode: li.node.variant?.barcode ?? null,
+      })),
+    };
+  });
+}
+
+export async function setVariantPrice(
+  cfg: ShopifyConfig,
+  opts: { productId: string; variantId: string; price: number }
+) {
+  const price = Number(opts.price);
+  if (!Number.isFinite(price) || price < 0) throw new Error("Invalid price");
+  const data = await shopifyGraphql<{
+    productVariantsBulkUpdate: {
+      productVariants: Array<{ id: string; price: string }> | null;
+      userErrors: Array<{ message: string }>;
+    };
+  }>(
+    cfg,
+    `mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+        productVariants { id price }
+        userErrors { message }
+      }
+    }`,
+    {
+      productId: opts.productId,
+      variants: [{ id: opts.variantId, price: String(price) }],
+    }
+  );
+  const errs = data.productVariantsBulkUpdate?.userErrors ?? [];
+  if (errs.length) throw new Error(errs.map((e) => e.message).join("; "));
+  const updated = data.productVariantsBulkUpdate?.productVariants?.[0];
+  return { variantId: updated?.id ?? opts.variantId, price: updated?.price ?? String(price) };
+}
+
+export async function getVariantPrice(cfg: ShopifyConfig, variantId: string): Promise<number | null> {
+  const data = await shopifyGraphql<{
+    productVariant: { price: string } | null;
+  }>(
+    cfg,
+    `query ($id: ID!) {
+      productVariant(id: $id) { price }
+    }`,
+    { id: variantId }
+  );
+  const p = data.productVariant?.price;
+  if (p == null) return null;
+  const n = Number(p);
+  return Number.isFinite(n) ? n : null;
+}
+
+export async function createStagedUpload(
+  cfg: ShopifyConfig,
+  opts: { filename: string; mimeType: string; fileSize: number }
+) {
+  const data = await shopifyGraphql<{
+    stagedUploadsCreate: {
+      stagedTargets: Array<{
+        url: string;
+        resourceUrl: string;
+        parameters: Array<{ name: string; value: string }>;
+      }> | null;
+      userErrors: Array<{ message: string; field: string[] }>;
+    };
+  }>(
+    cfg,
+    `mutation ($input: [StagedUploadInput!]!) {
+      stagedUploadsCreate(input: $input) {
+        stagedTargets {
+          url
+          resourceUrl
+          parameters { name value }
+        }
+        userErrors { field message }
+      }
+    }`,
+    {
+      input: [
+        {
+          filename: opts.filename,
+          mimeType: opts.mimeType,
+          httpMethod: "POST",
+          resource: "PRODUCT_IMAGE",
+          fileSize: String(Math.max(1, Math.floor(opts.fileSize))),
+        },
+      ],
+    }
+  );
+  const errs = data.stagedUploadsCreate?.userErrors ?? [];
+  if (errs.length) throw new Error(errs.map((e) => e.message).join("; "));
+  const target = data.stagedUploadsCreate?.stagedTargets?.[0];
+  if (!target?.url || !target.resourceUrl) throw new Error("Shopify staged upload target missing");
+  return target;
+}
+
+export async function attachProductMedia(
+  cfg: ShopifyConfig,
+  opts: { productId: string; resourceUrl: string; alt?: string }
+) {
+  const data = await shopifyGraphql<{
+    productCreateMedia: {
+      media: Array<{ id: string; status: string }> | null;
+      mediaUserErrors: Array<{ message: string }>;
+    };
+  }>(
+    cfg,
+    `mutation ($productId: ID!, $media: [CreateMediaInput!]!) {
+      productCreateMedia(productId: $productId, media: $media) {
+        media { ... on MediaImage { id status } }
+        mediaUserErrors { message }
+      }
+    }`,
+    {
+      productId: opts.productId,
+      media: [
+        {
+          originalSource: opts.resourceUrl,
+          mediaContentType: "IMAGE",
+          alt: opts.alt || null,
+        },
+      ],
+    }
+  );
+  const errs = data.productCreateMedia?.mediaUserErrors ?? [];
+  if (errs.length) throw new Error(errs.map((e) => e.message).join("; "));
+  return data.productCreateMedia?.media?.[0] ?? null;
+}

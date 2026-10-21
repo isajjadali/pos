@@ -123,3 +123,141 @@ export async function shopifyNotifySaleLines(lines) {
     })
   );
 }
+
+export async function shopifyOrdersList({ query = "", first = 25 } = {}) {
+  const sb = requireSupabase();
+  return invokeEdgeFunction(sb, "shopify-sync", {
+    action: "orders_list",
+    query,
+    first,
+  });
+}
+
+export async function shopifyOrderGet(orderId) {
+  const sb = requireSupabase();
+  return invokeEdgeFunction(sb, "shopify-sync", {
+    action: "order_get",
+    order_id: orderId,
+  });
+}
+
+/** Poll Shopify orders → insert events + adjust stock (webhook fallback). */
+export async function shopifyOrdersPollSync() {
+  const sb = requireSupabase();
+  return invokeEdgeFunction(sb, "shopify-sync", {
+    action: "orders_poll_sync",
+    first: 12,
+  });
+}
+
+export async function shopifySetVariantPrice(productId, price) {
+  const sb = requireSupabase();
+  return invokeEdgeFunction(sb, "shopify-sync", {
+    action: "variant_set_price",
+    product_id: productId,
+    price: Number(price),
+  });
+}
+
+export async function shopifyGetVariantPrice(productId) {
+  const sb = requireSupabase();
+  return invokeEdgeFunction(sb, "shopify-sync", {
+    action: "variant_get_price",
+    product_id: productId,
+  });
+}
+
+export async function shopifyPushPrices(productIds) {
+  const sb = requireSupabase();
+  return invokeEdgeFunction(sb, "shopify-sync", {
+    action: "push_prices_batch",
+    product_ids: productIds,
+  });
+}
+
+/**
+ * Stage → browser POST to Shopify → finish attach. Never stores file on POS.
+ */
+export async function shopifyUploadProductImage(productId, file, opts = {}) {
+  const sb = requireSupabase();
+  const filename = file.name || "image.jpg";
+  const mimeType = file.type || "image/jpeg";
+  const stage = await invokeEdgeFunction(sb, "shopify-sync", {
+    action: "product_image_stage",
+    product_id: productId,
+    filename,
+    mime_type: mimeType,
+    file_size: file.size,
+  });
+
+  const form = new FormData();
+  for (const p of stage.parameters || []) {
+    form.append(p.name, p.value);
+  }
+  form.append("file", file, filename);
+
+  const uploadRes = await fetch(stage.url, { method: "POST", body: form });
+  if (!uploadRes.ok) {
+    const text = await uploadRes.text().catch(() => "");
+    throw new Error(`Shopify staged upload failed (HTTP ${uploadRes.status})${text ? `: ${text.slice(0, 120)}` : ""}`);
+  }
+
+  return invokeEdgeFunction(sb, "shopify-sync", {
+    action: "product_image_finish",
+    product_id: productId,
+    shopify_product_id: stage.shopify_product_id,
+    resource_url: stage.resourceUrl,
+    filename,
+    alt: opts.alt || "",
+  });
+}
+
+export async function listShopifyOrderEvents({ unreadOnly = false, limit = 30 } = {}) {
+  const sb = requireSupabase();
+  let q = sb
+    .from("shopify_order_events")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (unreadOnly) q = q.is("read_at", null);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+
+export async function countUnreadShopifyOrderEvents() {
+  const sb = requireSupabase();
+  const { count, error } = await sb
+    .from("shopify_order_events")
+    .select("id", { count: "exact", head: true })
+    .is("read_at", null);
+  if (error) throw error;
+  return count ?? 0;
+}
+
+export async function markShopifyOrderEventsRead(ids) {
+  const sb = requireSupabase();
+  const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+  if (!list.length) return;
+  const { error } = await sb
+    .from("shopify_order_events")
+    .update({ read_at: new Date().toISOString() })
+    .in("id", list);
+  if (error) throw error;
+}
+
+export async function markAllShopifyOrderEventsRead() {
+  const sb = requireSupabase();
+  const { error } = await sb
+    .from("shopify_order_events")
+    .update({ read_at: new Date().toISOString() })
+    .is("read_at", null);
+  if (error) throw error;
+}
+
+/** Map filename stem → barcode (strip extension). */
+export function barcodeFromImageFilename(filename) {
+  const base = String(filename || "").trim().split(/[/\\]/).pop() || "";
+  const stem = base.replace(/\.[^.]+$/, "").trim();
+  return stem;
+}

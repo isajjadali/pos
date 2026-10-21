@@ -227,6 +227,11 @@ export async function updateProduct(id, payload) {
     is_active: Boolean(payload.is_active),
     updated_at: new Date().toISOString(),
   };
+  if (payload.shopify_price !== undefined) {
+    const sp = payload.shopify_price;
+    row.shopify_price =
+      sp == null || sp === "" ? null : Number.isFinite(Number(sp)) ? Number(sp) : null;
+  }
   if (!row.name) throw new Error("Product name is required");
   const { data, error } = await sb.from("products").update(row).eq("id", id).select().single();
   if (error) throw error;
