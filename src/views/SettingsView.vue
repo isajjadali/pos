@@ -19,6 +19,12 @@ import ReceiptPreview from "../components/ReceiptPreview.vue";
 import LabelLayoutPreview from "../components/LabelLayoutPreview.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { getSettings, updateSettings } from "../services/settings.js";
+import {
+  shopifyTestConnection,
+  shopifyPushAll,
+  shopifyPullStock,
+  shopifyRegisterWebhooks,
+} from "../services/shopify.js";
 import { useLayoutStore } from "../stores/layout.js";
 import { useRoute } from "vue-router";
 import { SAMPLE_RECEIPT_ITEMS, SAMPLE_RECEIPT_SALE } from "../utils/receipt.js";
@@ -62,7 +68,15 @@ const form = ref({
   label_price_font_size: DEFAULT_LABEL_FONT_SIZE,
   pos_auto_collapse_sidebar: true,
   default_label_unit: "pack",
+  shopify_enabled: false,
+  shopify_shop_domain: "",
+  shopify_location_id: null,
 });
+
+const shopifyLocationOptions = ref([]);
+const shopifyBusy = ref(false);
+const shopifyTesting = ref(false);
+const shopifyProgress = ref("");
 
 const labelUnitOptions = SALE_UNIT_OPTIONS;
 const receiptFontSelectOptions = RECEIPT_FONT_OPTIONS.map((o) => ({
@@ -146,6 +160,9 @@ async function load() {
       receipt_show_payment: s.receipt_show_payment !== false,
       pos_auto_collapse_sidebar: s.pos_auto_collapse_sidebar !== false,
       default_label_unit: s.default_label_unit || "pack",
+      shopify_enabled: Boolean(s.shopify_enabled),
+      shopify_shop_domain: s.shopify_shop_domain || "",
+      shopify_location_id: s.shopify_location_id || null,
     };
     setAppDefaultLabelUnit(form.value.default_label_unit);
     layout.setPosAutoCollapseSidebar(form.value.pos_auto_collapse_sidebar);
@@ -182,6 +199,100 @@ async function save() {
     message.error(e.message);
   } finally {
     saving.value = false;
+  }
+}
+
+async function testShopifyConnection() {
+  if (!supabaseConfigured) return;
+  shopifyTesting.value = true;
+  try {
+    const res = await shopifyTestConnection(form.value.shopify_shop_domain);
+    shopifyLocationOptions.value = (res.locations || []).map((l) => ({
+      label: l.name,
+      value: l.gid || l.id,
+    }));
+    if (!form.value.shopify_location_id && shopifyLocationOptions.value[0]) {
+      form.value.shopify_location_id = shopifyLocationOptions.value[0].value;
+    }
+    message.success(`Connected to ${res.shop || "Shopify"} (${shopifyLocationOptions.value.length} location(s))`);
+  } catch (e) {
+    message.error(e.message || "Shopify connection failed");
+  } finally {
+    shopifyTesting.value = false;
+  }
+}
+
+async function saveShopifySettings() {
+  if (!supabaseConfigured || !settingsLoaded.value) return;
+  shopifyBusy.value = true;
+  try {
+    await updateSettings(form.value);
+    message.success("Shopify settings saved");
+  } catch (e) {
+    message.error(e.message || "Could not save Shopify settings");
+  } finally {
+    shopifyBusy.value = false;
+  }
+}
+
+async function runShopifyPushAll() {
+  shopifyBusy.value = true;
+  shopifyProgress.value = "Starting push…";
+  try {
+    await updateSettings(form.value);
+    const res = await shopifyPushAll({
+      onProgress: ({ done, total, batch }) => {
+        shopifyProgress.value = `Pushing batch ${batch}: ${done}/${total}`;
+      },
+    });
+    const results = res.results || [];
+    const ok = results.filter((r) => !r.error && !r.skipped).length;
+    const skip = results.filter((r) => r.skipped).length;
+    const fail = results.filter((r) => r.error).length;
+    shopifyProgress.value = "";
+    message.success(`Push done: ${ok} updated, ${skip} skipped, ${fail} failed`);
+  } catch (e) {
+    shopifyProgress.value = "";
+    message.error(e.message || "Push failed");
+  } finally {
+    shopifyBusy.value = false;
+  }
+}
+
+async function runShopifyPullStock() {
+  shopifyBusy.value = true;
+  shopifyProgress.value = "Starting pull…";
+  try {
+    await updateSettings(form.value);
+    const res = await shopifyPullStock({
+      onProgress: ({ done, total, batch }) => {
+        shopifyProgress.value = `Pulling batch ${batch}: ${done}/${total}`;
+      },
+    });
+    const results = res.results || [];
+    const ok = results.filter((r) => !r.error && !r.skipped).length;
+    const skip = results.filter((r) => r.skipped).length;
+    const fail = results.filter((r) => r.error).length;
+    shopifyProgress.value = "";
+    message.success(`Pull done: ${ok} updated, ${skip} skipped, ${fail} failed`);
+  } catch (e) {
+    shopifyProgress.value = "";
+    message.error(e.message || "Pull failed");
+  } finally {
+    shopifyBusy.value = false;
+  }
+}
+
+async function runRegisterWebhooks() {
+  shopifyBusy.value = true;
+  try {
+    await updateSettings(form.value);
+    const res = await shopifyRegisterWebhooks();
+    message.success(`Webhooks registered → ${res.webhookUrl || "edge function"}`);
+  } catch (e) {
+    message.error(e.message || "Webhook register failed");
+  } finally {
+    shopifyBusy.value = false;
   }
 }
 
@@ -238,6 +349,68 @@ onMounted(load);
         </NForm>
       </NCard>
     </div>
+
+    <NCard title="Shopify sync" class="settings-full-section">
+      <NText depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
+        Sync name, barcode, and stock (pieces) by barcode. Prices stay separate; orders stay on
+        Shopify. Set Edge secrets
+        <code>SHOPIFY_CLIENT_ID</code> + <code>SHOPIFY_CLIENT_SECRET</code> from Dev Dashboard →
+        Settings (or legacy <code>SHOPIFY_ADMIN_TOKEN</code>). “Open app” in Shopify Admin is not
+        used — see README.
+      </NText>
+      <NForm label-placement="top" class="form-grid-2">
+        <NFormItem label="Enable inventory sync">
+          <NSwitch v-model:value="form.shopify_enabled" :disabled="!supabaseConfigured" />
+        </NFormItem>
+        <NFormItem label="Shop domain">
+          <NInput
+            v-model:value="form.shopify_shop_domain"
+            placeholder="my-store.myshopify.com"
+            :disabled="!supabaseConfigured"
+          />
+        </NFormItem>
+        <NFormItem label="Inventory location" class="span-2">
+          <NSelect
+            v-model:value="form.shopify_location_id"
+            :options="shopifyLocationOptions"
+            clearable
+            filterable
+            placeholder="Test connection to load locations"
+            :disabled="!supabaseConfigured"
+            style="width: 100%"
+          />
+        </NFormItem>
+      </NForm>
+      <NSpace class="settings-actions" wrap style="margin-top: 8px">
+        <NButton
+          :loading="shopifyTesting"
+          :disabled="!supabaseConfigured"
+          @click="testShopifyConnection"
+        >
+          Test connection
+        </NButton>
+        <NButton
+          type="primary"
+          :loading="shopifyBusy"
+          :disabled="!supabaseConfigured"
+          @click="saveShopifySettings"
+        >
+          Save Shopify settings
+        </NButton>
+        <NButton :loading="shopifyBusy" :disabled="!supabaseConfigured" @click="runShopifyPushAll">
+          Push all (name / barcode / stock)
+        </NButton>
+        <NButton :loading="shopifyBusy" :disabled="!supabaseConfigured" @click="runShopifyPullStock">
+          Pull stock
+        </NButton>
+        <NButton :loading="shopifyBusy" :disabled="!supabaseConfigured" @click="runRegisterWebhooks">
+          Register webhooks
+        </NButton>
+      </NSpace>
+      <NText v-if="shopifyProgress" depth="3" style="display: block; margin-top: 10px; font-size: 13px">
+        {{ shopifyProgress }}
+      </NText>
+    </NCard>
 
     <ScheduledDiscountsCard class="settings-full-section" />
 

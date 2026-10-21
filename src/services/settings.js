@@ -49,6 +49,13 @@ export async function updateSettings(payload) {
     label_price_font_size: normalizeLabelFontSize(payload.label_price_font_size),
     pos_auto_collapse_sidebar: payload.pos_auto_collapse_sidebar !== false,
     default_label_unit: normalizeSaleUnit(payload.default_label_unit || "pack"),
+    shopify_enabled: Boolean(payload.shopify_enabled),
+    shopify_shop_domain: payload.shopify_shop_domain
+      ? String(payload.shopify_shop_domain).trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "")
+      : null,
+    shopify_location_id: payload.shopify_location_id
+      ? String(payload.shopify_location_id).trim()
+      : null,
     updated_at: new Date().toISOString(),
   };
   if (current?.id) {

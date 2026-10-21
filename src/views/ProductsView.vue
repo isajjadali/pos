@@ -35,6 +35,7 @@ import {
   nextExternalProductId,
 } from "../services/products.js";
 import { receiveStock, setProductStock } from "../services/inventory.js";
+import { shopifyPushOne } from "../services/shopify.js";
 import { shouldBlockShortcut } from "../utils/hotkeys.js";
 import { refreshProductCatalog } from "../services/productCatalog.js";
 import { usePermissions } from "../composables/usePermissions.js";
@@ -286,7 +287,7 @@ const tableScrollX = computed(() => {
   x += 160 + 120 + 88; // tags, barcode, stock
   if (canSeePurchasePrices.value) x += 100;
   x += 140; // sale (multi-line unit prices)
-  if (canManageProducts.value) x += 120 + 90 + 150; // vendor, status, actions
+  if (canManageProducts.value) x += 120 + 90 + 210; // vendor, status, actions
   return x + 24;
 });
 
@@ -304,9 +305,20 @@ const columns = computed(() => {
     {
       title: "Name",
       key: "name",
-      width: nameColumnWidth.value,
+      width: nameColumnWidth.value + 56,
       ellipsis: { tooltip: true },
       ...tableSorter("string", "name"),
+      render: (row) =>
+        h(NSpace, { size: 6, align: "center", wrap: false }, () => [
+          h("span", { style: "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%" }, row.name || "—"),
+          row.shopify_variant_id
+            ? h(
+                NTag,
+                { size: "tiny", round: true, bordered: false, type: "info" },
+                () => "Shopify"
+              )
+            : null,
+        ]),
     },
     {
       title: "Tags",
@@ -392,10 +404,21 @@ const columns = computed(() => {
       {
         title: "",
         key: "actions",
-        width: 150,
+        width: 210,
         render: (row) =>
           h(NSpace, { size: 4 }, () => [
             h(NButton, { size: "tiny", onClick: () => openEdit(row) }, () => "Edit"),
+            row.barcode
+              ? h(
+                  NButton,
+                  {
+                    size: "tiny",
+                    quaternary: true,
+                    onClick: () => pushProductToShopify(row),
+                  },
+                  () => "Shopify"
+                )
+              : null,
             row.is_active
               ? h(
                   NButton,
@@ -487,6 +510,22 @@ function openCreate() {
   editing.value = null;
   form.value = emptyForm();
   showModal.value = true;
+}
+
+async function pushProductToShopify(row) {
+  try {
+    const res = await shopifyPushOne(row.id);
+    const one = res.results?.[0];
+    if (one?.error) throw new Error(one.error);
+    if (one?.skipped) {
+      message.warning(one.reason === "no_barcode" ? "Barcode required" : "Skipped");
+      return;
+    }
+    message.success("Pushed to Shopify");
+    await load();
+  } catch (e) {
+    message.error(e.message || "Shopify push failed");
+  }
 }
 
 function openEdit(row) {

@@ -223,5 +223,12 @@ export async function completeSaleFromCart(lines, { discount = 0, amountReceived
   });
   if (error) throw error;
   await refreshProductCatalog().catch(() => {});
+  // Shopify inventory (fire-and-forget; never block checkout)
+  try {
+    const { shopifyNotifySaleLines } = await import("./shopify.js");
+    shopifyNotifySaleLines(lines).catch(() => {});
+  } catch {
+    /* shopify module / sync optional */
+  }
   return data;
 }
