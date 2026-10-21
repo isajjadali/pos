@@ -20,6 +20,11 @@ const routes = [
       { path: "pos", name: "pos", component: () => import("../views/PosView.vue") },
       { path: "products", name: "products", component: () => import("../views/ProductsView.vue") },
       {
+        path: "categories",
+        name: "categories",
+        component: () => import("../views/CategoriesView.vue"),
+      },
+      {
         path: "price-groups",
         name: "price-groups",
         component: () => import("../views/PriceGroupsView.vue"),

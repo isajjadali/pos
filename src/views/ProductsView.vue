@@ -1000,7 +1000,12 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
           <NInput v-model:value="form.barcode" :placeholder="isCreate ? 'Auto if empty' : ''" />
         </NFormItem>
         <NFormItem label="Category">
-          <NSelect v-model:value="form.category_id" :options="categoryOptions" clearable filterable />
+          <NSelect
+            v-model:value="form.category_id"
+            :options="categoryOptions"
+            clearable
+            filterable
+          />
         </NFormItem>
         <NFormItem v-if="canManageProducts && tagsDbReady" label="Tags" class="span-3">
           <NSelect

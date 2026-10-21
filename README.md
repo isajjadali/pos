@@ -18,6 +18,10 @@ npm run dev
 
 See `IMPLEMENTATION.md` for feature status.
 
+## Categories
+
+**Categories** page (admin): list, create, edit, delete unused categories. Opening the page seeds the default store category list if missing. Products use a simple category dropdown.
+
 ## Shopify Hub Lite (optional)
 
 **Feature flag (default OFF):** set `VITE_FEATURE_SHOPIFY=true` in `.env` and restart Vite to show Shopify UI / sync. Code stays in the repo while the flag is off.

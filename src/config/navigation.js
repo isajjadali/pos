@@ -11,6 +11,7 @@ import {
   PeopleOutline,
   PricetagOutline,
   BagHandleOutline,
+  FolderOpenOutline,
 } from "@vicons/ionicons5";
 import { FEATURE_SHOPIFY } from "./features.js";
 
@@ -18,6 +19,7 @@ export const NAV_ITEMS = [
   { label: "Dashboard", key: "dashboard", icon: HomeOutline, adminOnly: true },
   { label: "POS / New Sale", key: "pos", icon: CartOutline, adminOnly: false },
   { label: "Products", key: "products", icon: CubeOutline, adminOnly: false },
+  { label: "Categories", key: "categories", icon: FolderOpenOutline, adminOnly: true },
   { label: "Price groups", key: "price-groups", icon: PricetagOutline, adminOnly: true },
   {
     label: "Shopify Orders",

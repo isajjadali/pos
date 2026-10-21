@@ -10,7 +10,6 @@ import {
   NSwitch,
   NText,
   NCard,
-  NAlert,
   NRadioGroup,
   NRadio,
   useMessage,
@@ -29,8 +28,13 @@ import {
 import { rowNumberColumn, tableSorter } from "../utils/tableColumns.js";
 import {
   UNIT_LISTING_FILTER_OPTIONS,
+  boxPriceOf,
   defaultPosSaleUnit,
   formatProductUnitPrices,
+  packPriceOf,
+  piecePriceOf,
+  piecesPerBoxOf,
+  piecesPerPackOf,
   productHasPack,
   productHasBox,
   productMatchesUnitFilter,
@@ -64,10 +68,25 @@ const customRanges = ref(loadRanges());
 /** @type {import('vue').Ref<Record<string, number>>} draft sale prices by group key */
 const drafts = ref({});
 
+/**
+ * Draft piece/pack/box prices for solo multi-unit rows.
+ * @type {import('vue').Ref<Record<string, { piece: number, pack: number, box: number|null }>>}
+ */
+const multiDrafts = ref({});
+
 const modeOptions = [
   { label: "Exact purchase cost", value: "exact" },
   { label: "Custom cost ranges", value: "ranges" },
 ];
+
+/** Always show cost ranges by min (then max). */
+function sortRanges(list) {
+  return [...(list ?? [])].sort((a, b) => {
+    const d = (Number(a.min) || 0) - (Number(b.min) || 0);
+    if (d !== 0) return d;
+    return (Number(a.max) || 0) - (Number(b.max) || 0);
+  });
+}
 
 function loadRanges() {
   try {
@@ -75,13 +94,15 @@ function loadRanges() {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((r, i) => ({
-        id: String(r.id || `r${i}`),
-        min: Math.max(0, Number(r.min) || 0),
-        max: Math.max(0, Number(r.max) || 0),
-      }))
-      .filter((r) => r.max >= r.min);
+    return sortRanges(
+      parsed
+        .map((r, i) => ({
+          id: String(r.id || `r${i}`),
+          min: Math.max(0, Number(r.min) || 0),
+          max: Math.max(0, Number(r.max) || 0),
+        }))
+        .filter((r) => r.max >= r.min)
+    );
   } catch {
     return [];
   }
@@ -98,10 +119,15 @@ function persistRanges() {
 watch(customRanges, persistRanges, { deep: true });
 watch(groupMode, (mode) => {
   drafts.value = {};
+  multiDrafts.value = {};
   if (mode === "ranges" && !customRanges.value.length) {
     addRange();
   }
 });
+
+function isMultiUnitProduct(p) {
+  return productHasPack(p) || productHasBox(p);
+}
 
 const hasActiveFilters = computed(
   () =>
@@ -137,6 +163,13 @@ function productSale(p) {
   return money(resolveSaleUnit(p, defaultPosSaleUnit(p)).unit_selling_price);
 }
 
+/** Current catalog value per piece (stock is always pieces). */
+function productSalePerPiece(p) {
+  const piece = Number(piecePriceOf(p));
+  if (Number.isFinite(piece) && piece >= 0) return money(piece);
+  return money(productSale(p));
+}
+
 function productSaleLabel(p) {
   return formatProductUnitPrices(p, { multiline: true });
 }
@@ -161,9 +194,19 @@ function findRangeForCost(cost) {
   return null;
 }
 
+/** Piece-only products go into cost groups; pack/box stay as solo rows. */
+function pieceOnlyProducts() {
+  return filteredProducts.value.filter((p) => !isMultiUnitProduct(p));
+}
+
+function multiUnitProducts() {
+  return filteredProducts.value.filter((p) => isMultiUnitProduct(p));
+}
+
 function buildGroupBuckets() {
   /** @type {Map<string, { key: string, label: string, sortKey: number, purchaseCost: number|null, rangeMin: number|null, rangeMax: number|null, products: any[] }>} */
   const map = new Map();
+  const pool = pieceOnlyProducts();
 
   if (groupMode.value === "ranges") {
     for (const r of customRanges.value) {
@@ -180,14 +223,13 @@ function buildGroupBuckets() {
         outsideRange: false,
       });
     }
-    for (const p of filteredProducts.value) {
+    for (const p of pool) {
       const cost = productCost(p);
       const band = findRangeForCost(cost);
       if (band) {
         map.get(`range:${band.id}`)?.products.push(p);
         continue;
       }
-      // Outside custom ranges → each exact purchase cost is its own editable group
       const key = `outside:${priceGroupKey(cost)}`;
       if (!map.has(key)) {
         map.set(key, {
@@ -206,8 +248,7 @@ function buildGroupBuckets() {
     return [...map.values()].filter((g) => g.products.length > 0);
   }
 
-  // Exact purchase cost
-  for (const p of filteredProducts.value) {
+  for (const p of pool) {
     const cost = productCost(p);
     const key = `cost:${priceGroupKey(cost)}`;
     if (!map.has(key)) {
@@ -226,86 +267,186 @@ function buildGroupBuckets() {
   return [...map.values()];
 }
 
-function defaultDraftForGroup(productsInGroup) {
-  if (!productsInGroup.length) return 0;
+/** Shared sale when every product matches; null if mixed (not an average). */
+function sharedSaleForGroup(productsInGroup) {
+  if (!productsInGroup.length) return null;
   const first = productSale(productsInGroup[0]);
   const allSame = productsInGroup.every((p) => nearlyEqual(productSale(p), first));
-  return allSame ? first : first;
+  return allSame ? first : null;
+}
+
+function baselineMultiDraft(p) {
+  const hasPack = productHasPack(p);
+  const hasBox = productHasBox(p);
+  return {
+    piece: money(piecePriceOf(p)),
+    pack: hasPack ? money(packPriceOf(p)) : money(piecePriceOf(p)),
+    box: hasBox ? money(boxPriceOf(p) ?? 0) : null,
+  };
+}
+
+function resolveMultiDraft(key, p) {
+  const base = baselineMultiDraft(p);
+  const raw = multiDrafts.value[key];
+  if (!raw) {
+    return { ...base, hasExplicitDraft: false };
+  }
+  return {
+    piece: money(raw.piece ?? base.piece),
+    pack: money(raw.pack ?? base.pack),
+    box: raw.box == null && base.box == null ? null : money(raw.box ?? base.box ?? 0),
+    hasExplicitDraft: true,
+  };
+}
+
+function buildGroupRow(g) {
+  const sharedSale = sharedSaleForGroup(g.products);
+  const mixedSales = sharedSale == null && g.products.length > 0;
+  const draftRaw = drafts.value[g.key];
+  const hasExplicitDraft = draftRaw != null && Number.isFinite(Number(draftRaw));
+  // Mixed groups: no fake default (was first product — looked like an average).
+  // Uniform groups: show the shared current sale until you type a new one.
+  const draftPrice = hasExplicitDraft
+    ? money(draftRaw)
+    : sharedSale != null
+      ? money(sharedSale)
+      : null;
+
+  let qty = 0;
+  let costValue = 0;
+  let saleValueBefore = 0;
+  let saleValue = 0;
+  let belowCostCount = 0;
+  let needsUpdateCount = 0;
+
+  for (const p of g.products) {
+    const stock = Math.max(0, Number(p.current_stock) || 0);
+    const cost = productCost(p);
+    const sale = productSale(p);
+    const salePerPiece = productSalePerPiece(p);
+    // Preview uses draft only after you set one; else keep each product's own sale.
+    const draftPerPiece = hasExplicitDraft ? money(draftPrice) : salePerPiece;
+    qty += stock;
+    costValue += stock * cost;
+    saleValueBefore += stock * salePerPiece;
+    saleValue += stock * draftPerPiece;
+    if (hasExplicitDraft && draftPerPiece + 0.009 < cost) belowCostCount += 1;
+    if (hasExplicitDraft && !nearlyEqual(sale, draftPrice)) needsUpdateCount += 1;
+  }
+
+  costValue = money(costValue);
+  saleValue = money(saleValue);
+  saleValueBefore = money(saleValueBefore);
+  const profit = money(saleValue - costValue);
+  const profitBefore = money(saleValueBefore - costValue);
+  const changed = hasExplicitDraft && needsUpdateCount > 0;
+
+  return {
+    ...g,
+    rowType: "group",
+    draftPrice,
+    draftPiece: draftPrice,
+    draftPack: null,
+    draftBox: null,
+    hasPack: false,
+    hasBox: false,
+    hasExplicitDraft,
+    changed,
+    outsideRange: Boolean(g.outsideRange),
+    mixedSales,
+    productCount: g.products.length,
+    qty,
+    costValue,
+    saleValue,
+    saleValueBefore,
+    profit,
+    profitBefore,
+    belowCostCount,
+    needsUpdateCount,
+    saleSort: g.products.length ? Math.min(...g.products.map((p) => productSale(p))) : 0,
+    profitSort: changed ? profit : profitBefore,
+    saleLabel: mixedSales
+      ? "Mixed"
+      : g.products.length
+        ? productSaleLabel(g.products[0])
+        : "—",
+    saleLabelMulti: false,
+  };
+}
+
+function buildSoloMultiRow(p) {
+  const key = `solo:${p.id}`;
+  const cost = productCost(p);
+  const stock = Math.max(0, Number(p.current_stock) || 0);
+  const hasPack = productHasPack(p);
+  const hasBox = productHasBox(p);
+  const draft = resolveMultiDraft(key, p);
+  const salePerPiece = productSalePerPiece(p);
+  const draftPerPiece = money(draft.piece);
+  const costValue = money(stock * cost);
+  const saleValueBefore = money(stock * salePerPiece);
+  const saleValue = money(stock * draftPerPiece);
+  const profit = money(saleValue - costValue);
+  const profitBefore = money(saleValueBefore - costValue);
+
+  const pieceChanged = !nearlyEqual(draft.piece, piecePriceOf(p));
+  const packChanged = hasPack && !nearlyEqual(draft.pack, packPriceOf(p));
+  const boxChanged =
+    hasBox && draft.box != null && !nearlyEqual(draft.box, boxPriceOf(p) ?? 0);
+  const needsUpdateCount = pieceChanged || packChanged || boxChanged ? 1 : 0;
+  const changed = draft.hasExplicitDraft && needsUpdateCount > 0;
+  const belowCostCount = draftPerPiece + 0.009 < cost ? 1 : 0;
+
+  const idLabel = p.external_product_id || "—";
+  const nameLabel = p.name || "Untitled";
+
+  return {
+    key,
+    rowType: "multi",
+    label: nameLabel,
+    sortKey: 2e12 + cost,
+    purchaseCost: cost,
+    rangeMin: cost,
+    rangeMax: cost,
+    products: [p],
+    outsideRange: false,
+    draftPrice: draft.piece,
+    draftPiece: draft.piece,
+    draftPack: hasPack ? draft.pack : null,
+    draftBox: hasBox ? draft.box : null,
+    hasPack,
+    hasBox,
+    packPcs: hasPack ? piecesPerPackOf(p) : 1,
+    boxPcs: hasBox ? piecesPerBoxOf(p) : null,
+    hasExplicitDraft: draft.hasExplicitDraft,
+    changed,
+    mixedSales: false,
+    productCount: 1,
+    qty: stock,
+    costValue,
+    saleValue,
+    saleValueBefore,
+    profit,
+    profitBefore,
+    belowCostCount,
+    needsUpdateCount,
+    saleSort: salePerPiece,
+    profitSort: changed ? profit : profitBefore,
+    saleLabel: productSaleLabel(p),
+    saleLabelMulti: true,
+    productIdLabel: idLabel,
+  };
 }
 
 const groups = computed(() => {
-  const buckets = buildGroupBuckets();
-
-  const list = buckets.map((g) => {
-    const baseline = defaultDraftForGroup(g.products);
-    const draftRaw = drafts.value[g.key];
-    const hasExplicitDraft = draftRaw != null && Number.isFinite(Number(draftRaw));
-    const draftPrice = hasExplicitDraft ? money(draftRaw) : baseline;
-
-    let qty = 0;
-    let costValue = 0;
-    let saleValueBefore = 0;
-    let saleValue = 0;
-    let belowCostCount = 0;
-    let needsUpdateCount = 0;
-    const salePrices = new Set();
-
-    for (const p of g.products) {
-      const stock = Math.max(0, Number(p.current_stock) || 0);
-      const cost = productCost(p);
-      const sale = productSale(p);
-      salePrices.add(priceGroupKey(sale));
-      qty += stock;
-      costValue += stock * cost;
-      saleValueBefore += stock * sale;
-      saleValue += stock * draftPrice;
-      if (draftPrice + 0.009 < cost) belowCostCount += 1;
-      if (!nearlyEqual(sale, draftPrice)) needsUpdateCount += 1;
-    }
-
-    costValue = money(costValue);
-    saleValue = money(saleValue);
-    saleValueBefore = money(saleValueBefore);
-    const profit = money(saleValue - costValue);
-    const profitBefore = money(saleValueBefore - costValue);
-    const mixedSales = salePrices.size > 1;
-    const changed = hasExplicitDraft && needsUpdateCount > 0;
-    const saleSort = g.products.length
-      ? Math.min(...g.products.map((p) => productSale(p)))
-      : 0;
-    const profitSort = changed ? profit : profitBefore;
-
-    return {
-      ...g,
-      draftPrice,
-      hasExplicitDraft,
-      changed,
-      outsideRange: Boolean(g.outsideRange),
-      mixedSales,
-      productCount: g.products.length,
-      qty,
-      costValue,
-      saleValue,
-      saleValueBefore,
-      profit,
-      profitBefore,
-      belowCostCount,
-      needsUpdateCount,
-      saleSort,
-      profitSort,
-      saleLabel: mixedSales
-        ? "Mixed"
-        : g.products.length
-          ? productSaleLabel(g.products[0])
-          : "—",
-      saleLabelMulti:
-        !mixedSales &&
-        g.products.length > 0 &&
-        (productHasPack(g.products[0]) || productHasBox(g.products[0])),
-    };
+  const list = [
+    ...buildGroupBuckets().map(buildGroupRow),
+    ...multiUnitProducts().map(buildSoloMultiRow),
+  ];
+  list.sort((a, b) => {
+    if (a.rowType !== b.rowType) return a.rowType === "group" ? -1 : 1;
+    return a.sortKey - b.sortKey;
   });
-
-  list.sort((a, b) => a.sortKey - b.sortKey);
   return list;
 });
 
@@ -349,31 +490,88 @@ function setDraft(key, value) {
   drafts.value = next;
 }
 
+function setMultiDraft(row, field, value) {
+  const p = row.products[0];
+  if (!p) return;
+  const cur = resolveMultiDraft(row.key, p);
+  const nextVal =
+    value == null || !Number.isFinite(Number(value)) ? cur[field] : money(value);
+  multiDrafts.value = {
+    ...multiDrafts.value,
+    [row.key]: {
+      piece: field === "piece" ? nextVal : cur.piece,
+      pack: field === "pack" ? nextVal : cur.pack,
+      box: field === "box" ? nextVal : cur.box,
+    },
+  };
+}
+
+function groupDraftBase(group) {
+  if (group.draftPrice != null && Number.isFinite(Number(group.draftPrice))) {
+    return money(group.draftPrice);
+  }
+  // Mixed / empty: bump from cheapest current sale in the group (not an average).
+  if (group.products?.length) {
+    return money(Math.min(...group.products.map((p) => productSale(p))));
+  }
+  return 0;
+}
+
 function bumpGroup(group, pct) {
-  const base = group.draftPrice;
-  setDraft(group.key, money(base * (1 + pct / 100)));
+  if (group.rowType === "multi") {
+    const factor = 1 + pct / 100;
+    const p = group.products[0];
+    const cur = resolveMultiDraft(group.key, p);
+    multiDrafts.value = {
+      ...multiDrafts.value,
+      [group.key]: {
+        piece: money(cur.piece * factor),
+        pack: money(cur.pack * factor),
+        box: cur.box == null ? null : money(cur.box * factor),
+      },
+    };
+    return;
+  }
+  setDraft(group.key, money(groupDraftBase(group) * (1 + pct / 100)));
 }
 
 function roundGroup(group, step) {
   const s = Math.max(1, Number(step) || 10);
-  setDraft(group.key, Math.round(group.draftPrice / s) * s);
+  if (group.rowType === "multi") {
+    const p = group.products[0];
+    const cur = resolveMultiDraft(group.key, p);
+    multiDrafts.value = {
+      ...multiDrafts.value,
+      [group.key]: {
+        piece: Math.round(cur.piece / s) * s,
+        pack: Math.round(cur.pack / s) * s,
+        box: cur.box == null ? null : Math.round(cur.box / s) * s,
+      },
+    };
+    return;
+  }
+  setDraft(group.key, Math.round(groupDraftBase(group) / s) * s);
 }
 
 function resetDrafts() {
   drafts.value = {};
+  multiDrafts.value = {};
   message.info("Draft sale prices cleared");
 }
 
 function addRange() {
-  const last = customRanges.value[customRanges.value.length - 1];
+  const sorted = sortRanges(customRanges.value);
+  const last = sorted[sorted.length - 1];
   const min = last ? money(last.max) : 0;
   const max = money(min + 100);
   const id = `r${Date.now()}`;
-  customRanges.value = [...customRanges.value, { id, min, max }];
+  customRanges.value = sortRanges([...customRanges.value, { id, min, max }]);
   nextTick(() => {
     const rows = document.querySelectorAll(".pg-range-row");
-    const lastRow = rows[rows.length - 1];
-    const input = lastRow?.querySelector("input");
+    // After sort, focus the row that matches the new id (by index in sorted list)
+    const idx = customRanges.value.findIndex((r) => r.id === id);
+    const row = idx >= 0 ? rows[idx] : rows[rows.length - 1];
+    const input = row?.querySelector("input");
     input?.focus?.();
     input?.select?.();
   });
@@ -386,14 +584,31 @@ function onRangeEnter(e) {
 }
 
 function removeRange(id) {
-  customRanges.value = customRanges.value.filter((r) => r.id !== id);
+  customRanges.value = sortRanges(customRanges.value.filter((r) => r.id !== id));
   drafts.value = {};
+  multiDrafts.value = {};
+}
+
+function focusRangeRow(id) {
+  nextTick(() => {
+    const idx = customRanges.value.findIndex((r) => r.id === id);
+    if (idx < 0) return;
+    const rows = document.querySelectorAll(".pg-range-row");
+    const input = rows[idx]?.querySelector("input");
+    input?.focus?.();
+  });
 }
 
 function updateRange(id, field, value) {
-  customRanges.value = customRanges.value.map((r) =>
-    r.id === id ? { ...r, [field]: Math.max(0, Number(value) || 0) } : r
+  const prevIdx = customRanges.value.findIndex((r) => r.id === id);
+  customRanges.value = sortRanges(
+    customRanges.value.map((r) =>
+      r.id === id ? { ...r, [field]: Math.max(0, Number(value) || 0) } : r
+    )
   );
+  const nextIdx = customRanges.value.findIndex((r) => r.id === id);
+  // If sort moved this row, keep focus on it so typing stays usable
+  if (prevIdx !== nextIdx) focusRangeRow(id);
 }
 
 async function load() {
@@ -420,18 +635,23 @@ watch(activeOnly, () => {
 function confirmSave() {
   const changed = groups.value.filter((g) => g.changed);
   if (!changed.length) {
-    message.warning("Set a new sale price on a group first (then save)");
+    message.warning("Set a new sale price first (then save)");
     return;
   }
   const below = changed.reduce((s, g) => s + g.belowCostCount, 0);
   const productCount = changed.reduce((s, g) => s + g.needsUpdateCount, 0);
+  const groupN = changed.filter((g) => g.rowType === "group").length;
+  const multiN = changed.filter((g) => g.rowType === "multi").length;
   dialog.warning({
-    title: "Save sale prices for groups?",
+    title: "Save sale prices?",
     content: () =>
       h("div", [
         h(
           "p",
-          `Set selling price on ${productCount} product(s) across ${changed.length} purchase-cost group(s).`
+          `Update ${productCount} product(s)` +
+            (groupN ? ` · ${groupN} cost group(s)` : "") +
+            (multiN ? ` · ${multiN} pack/box row(s)` : "") +
+            "."
         ),
         below > 0
           ? h(
@@ -459,19 +679,59 @@ async function saveChanged() {
   try {
     const updates = [];
     for (const g of changed) {
+      if (g.rowType === "multi") {
+        const p = g.products[0];
+        if (!p) continue;
+        if (!nearlyEqual(g.draftPiece, piecePriceOf(p))) {
+          updates.push({
+            id: p.id,
+            selling_price: g.draftPiece,
+            target_unit: "piece",
+          });
+        }
+        if (g.hasPack && !nearlyEqual(g.draftPack, packPriceOf(p))) {
+          updates.push({
+            id: p.id,
+            selling_price: g.draftPack,
+            target_unit: "pack",
+          });
+        }
+        if (g.hasBox && g.draftBox != null && !nearlyEqual(g.draftBox, boxPriceOf(p) ?? 0)) {
+          updates.push({
+            id: p.id,
+            selling_price: g.draftBox,
+            target_unit: "box",
+          });
+        }
+        // Restore original default unit (RPC sets default to last target_unit).
+        const preferred = resolveSaleUnit(p, p.default_sale_unit || defaultPosSaleUnit(p));
+        const restorePrice =
+          preferred.sale_unit === "box"
+            ? g.draftBox ?? preferred.unit_selling_price
+            : preferred.sale_unit === "pack"
+              ? g.draftPack ?? preferred.unit_selling_price
+              : g.draftPiece;
+        updates.push({
+          id: p.id,
+          selling_price: money(restorePrice),
+          target_unit: preferred.sale_unit,
+        });
+        continue;
+      }
       for (const p of g.products) {
         if (!nearlyEqual(productSale(p), g.draftPrice)) {
           updates.push({
             id: p.id,
             selling_price: g.draftPrice,
-            target_unit: defaultPosSaleUnit(p),
+            target_unit: "piece",
           });
         }
       }
     }
     const { updated } = await bulkUpdateSellingPrices(updates);
-    message.success(`Updated ${updated} product(s)`);
+    message.success(`Updated ${updated} price row(s)`);
     drafts.value = {};
+    multiDrafts.value = {};
     await load();
   } catch (e) {
     message.error(e.message || "Save failed");
@@ -480,11 +740,67 @@ async function saveChanged() {
   }
 }
 
+function renderMultiPriceEditor(row) {
+  const fields = [
+    {
+      key: "piece",
+      label: "Pc",
+      value: row.draftPiece,
+      show: true,
+    },
+    {
+      key: "pack",
+      label: `Pack(${row.packPcs})`,
+      value: row.draftPack,
+      show: row.hasPack,
+    },
+    {
+      key: "box",
+      label: row.boxPcs ? `Box(${row.boxPcs})` : "Box",
+      value: row.draftBox,
+      show: row.hasBox,
+    },
+  ];
+  return h(
+    "div",
+    { class: "pg-multi-drafts" },
+    fields
+      .filter((f) => f.show)
+      .map((f) =>
+        h("div", { class: "pg-multi-draft-row", key: f.key }, [
+          h("span", { class: "pg-multi-draft-label" }, f.label),
+          h(NInputNumber, {
+            value: f.value,
+            min: 0,
+            size: "tiny",
+            style: "width: 100px",
+            status:
+              f.key === "piece" && row.belowCostCount > 0 ? "warning" : undefined,
+            onUpdateValue: (v) => setMultiDraft(row, f.key, v),
+          }),
+        ])
+      )
+  );
+}
+
 const columns = computed(() => [
   rowNumberColumn(1, 5000),
   {
     type: "expand",
     renderExpand: (row) => {
+      if (row.rowType === "multi") {
+        const p = row.products[0];
+        const m = marginPercent(row.draftPiece, productCost(p));
+        return h("div", { class: "pg-expand" }, [
+          h(
+            "div",
+            { class: "pg-expand-note" },
+            `${row.productIdLabel} · purchase ${formatPkr(productCost(p))} · draft pc margin ${
+              m != null ? `${m}%` : "—"
+            }. Edit Pc / Pack / Box in the New sale column.`
+          ),
+        ]);
+      }
       const head = h("div", { class: "pg-expand-head" }, [
         h("span", "Product ID"),
         h("span", "Name"),
@@ -496,22 +812,16 @@ const columns = computed(() => [
       const body = row.products.map((p) => {
         const stock = Number(p.current_stock) || 0;
         const cost = productCost(p);
-        const multi = productHasPack(p) || productHasBox(p);
-        const m = marginPercent(row.draftPrice, cost);
-        const below = row.draftPrice + 0.009 < cost;
+        const saleNow = productSalePerPiece(p);
+        const preview = row.hasExplicitDraft ? money(row.draftPrice) : saleNow;
+        const m = marginPercent(preview, cost);
+        const below = preview + 0.009 < cost;
         return h("div", { class: "pg-expand-row", key: p.id }, [
           h("span", { class: "pg-expand-id" }, p.external_product_id || "—"),
           h("span", { class: "pg-expand-name", title: p.name }, p.name || "—"),
           h("span", { class: "pg-expand-num" }, String(stock)),
           h("span", { class: "pg-expand-num" }, formatPkr(cost)),
-          h(
-            "span",
-            {
-              class: ["pg-expand-num", multi ? "pg-expand-sale-multi" : ""],
-              style: multi ? "white-space: pre-line; font-size: 12px; line-height: 1.35" : undefined,
-            },
-            productSaleLabel(p)
-          ),
+          h("span", { class: "pg-expand-num" }, productSaleLabel(p)),
           h(
             "span",
             { class: ["pg-expand-num", below || (m != null && m < 0) ? "pg-neg" : ""] },
@@ -522,7 +832,9 @@ const columns = computed(() => [
       const note = h(
         "div",
         { class: "pg-expand-note" },
-        "* Margin uses draft new sale price vs each product’s purchase cost"
+        row.hasExplicitDraft
+          ? "* Margin uses your New sale draft vs purchase cost."
+          : "* Margin uses each product’s current sale vs purchase cost. Mixed groups: type a New sale to set all."
       );
       return h("div", { class: "pg-expand" }, [head, ...body, note]);
     },
@@ -530,21 +842,27 @@ const columns = computed(() => [
   {
     title: "Purchase group",
     key: "sortKey",
-    width: 160,
+    width: 200,
     ellipsis: { tooltip: true },
     ...tableSorter("number", "sortKey"),
     render: (r) =>
       h("div", [
         h("span", { class: "pg-group-label" }, r.label),
-        r.outsideRange
-          ? h("div", { class: "pg-group-sub" }, "Outside your ranges")
-          : null,
+        r.rowType === "multi"
+          ? h(
+              "div",
+              { class: "pg-group-sub" },
+              `${r.productIdLabel} · cost ${formatPkr(r.purchaseCost)} · pack/box`
+            )
+          : r.outsideRange
+            ? h("div", { class: "pg-group-sub" }, "Outside your ranges")
+            : null,
       ]),
   },
   {
     title: "Sale now",
     key: "saleSort",
-    width: 140,
+    width: 150,
     ...tableSorter("number", "saleSort"),
     render: (r) =>
       h(
@@ -608,17 +926,20 @@ const columns = computed(() => [
   {
     title: "New sale price",
     key: "draftPrice",
-    width: 140,
+    width: 200,
     ...tableSorter("number", "draftPrice"),
     render: (row) =>
-      h(NInputNumber, {
-        value: row.draftPrice,
-        min: 0,
-        size: "small",
-        style: "width: 100%",
-        status: row.belowCostCount > 0 ? "warning" : undefined,
-        onUpdateValue: (v) => setDraft(row.key, v),
-      }),
+      row.rowType === "multi"
+        ? renderMultiPriceEditor(row)
+        : h(NInputNumber, {
+            value: row.draftPrice,
+            min: 0,
+            size: "small",
+            style: "width: 100%",
+            placeholder: row.mixedSales ? "Set all…" : undefined,
+            status: row.belowCostCount > 0 ? "warning" : undefined,
+            onUpdateValue: (v) => setDraft(row.key, v),
+          }),
   },
   {
     title: "",
@@ -641,43 +962,11 @@ onMounted(load);
     <h1 style="margin-top: 0">Price groups</h1>
     <SupabaseRequiredAlert />
     <NText depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
-      Groups are based on <strong>purchase cost</strong> (avg cost), not sale price. Set
-      <strong>New sale price</strong> on a group to preview profit, then save to apply that sale
-      price to every product in the group.
+      <strong>Piece-only</strong> products group by purchase cost. Set one
+      <strong>New sale price</strong> for the whole group.
+      <strong>Pack / box</strong> products stay as their own rows — edit Pc, Pack, and Box prices
+      separately. Sale value always uses piece price × stock.
     </NText>
-
-    <div class="pg-cards">
-      <NCard size="small" class="pg-card">
-        <div class="pg-card-label">Stock at cost</div>
-        <div class="pg-card-value">{{ formatPkr(summary.cost) }}</div>
-        <div class="pg-card-hint">On-hand × purchase cost</div>
-      </NCard>
-      <NCard size="small" class="pg-card">
-        <div class="pg-card-label">Stock at sale</div>
-        <div class="pg-card-value">{{ formatPkr(summary.sale) }}</div>
-        <div v-if="summary.hasDraftDelta" class="pg-card-delta">
-          was {{ formatPkr(summary.saleBefore) }}
-        </div>
-        <div class="pg-card-hint">On-hand × draft / current sale</div>
-      </NCard>
-      <NCard size="small" class="pg-card">
-        <div class="pg-card-label">Potential profit</div>
-        <div class="pg-card-value" :class="{ 'pg-neg': summary.profit < 0 }">
-          {{ formatPkr(summary.profit) }}
-        </div>
-        <div v-if="summary.hasDraftDelta" class="pg-card-delta">
-          was {{ formatPkr(summary.profitBefore) }}
-        </div>
-        <div class="pg-card-hint">Sale value − cost value</div>
-      </NCard>
-      <NCard size="small" class="pg-card">
-        <div class="pg-card-label">Margin</div>
-        <div class="pg-card-value">
-          {{ summary.margin != null ? `${summary.margin}%` : "—" }}
-        </div>
-        <div class="pg-card-hint">Profit ÷ sale value</div>
-      </NCard>
-    </div>
 
     <NCard size="small" title="How to group" style="margin-bottom: 12px">
       <NRadioGroup v-model:value="groupMode" name="group_mode">
@@ -687,12 +976,12 @@ onMounted(load);
       </NRadioGroup>
       <NText depth="3" style="display: block; margin-top: 8px; font-size: 12px">
         <template v-if="groupMode === 'exact'">
-          One group per exact purchase cost (e.g. all products bought at Rs 50 together). Expand to
-          see each product’s current sale price.
+          Piece-only: one group per exact purchase cost. Pack/box products are listed separately
+          below the groups (not merged).
         </template>
         <template v-else>
-          Define ranges (e.g. Rs 30–150, Rs 150–200). Matching products join those bands; anything
-          outside still appears as separate exact-cost groups (editable & savable) below.
+          Piece-only products join your cost ranges. Pack/box products stay as independent rows
+          (edit Pc / Pack / Box). Outside-range piece products still appear as exact-cost groups.
         </template>
       </NText>
 
@@ -726,17 +1015,7 @@ onMounted(load);
       </div>
     </NCard>
 
-    <NAlert
-      v-if="summary.changedGroups"
-      type="warning"
-      style="margin-bottom: 12px"
-      :bordered="false"
-    >
-      {{ summary.changedGroups }} group(s) · {{ summary.changedProducts }} product(s) pending save —
-      stock at sale {{ formatPkr(summary.saleBefore) }} → {{ formatPkr(summary.sale) }}
-    </NAlert>
-
-    <NSpace class="app-filter-stack" style="margin-bottom: 16px" wrap>
+    <NSpace class="app-filter-stack" style="margin-bottom: 12px" wrap>
       <NInput
         v-model:value="search"
         clearable
@@ -770,16 +1049,61 @@ onMounted(load);
       </NText>
       <ClearFiltersButton :disabled="!hasActiveFilters" @clear="clearFilters" />
       <NButton :disabled="!supabaseConfigured" :loading="loading" @click="load">Refresh</NButton>
-      <NButton :disabled="!summary.changedGroups" @click="resetDrafts">Reset drafts</NButton>
-      <NButton
-        type="primary"
-        :disabled="!supabaseConfigured || !summary.changedGroups"
-        :loading="saving"
-        @click="confirmSave"
-      >
-        Save changed groups{{ summary.changedGroups ? ` (${summary.changedGroups})` : "" }}
-      </NButton>
     </NSpace>
+
+    <div class="pg-sticky" :class="{ 'pg-sticky--pending': summary.changedGroups }">
+      <div class="pg-sticky-metrics">
+        <div class="pg-sticky-metric">
+          <span class="pg-sticky-label">Cost</span>
+          <span class="pg-sticky-value">{{ formatPkr(summary.cost) }}</span>
+        </div>
+        <div class="pg-sticky-metric">
+          <span class="pg-sticky-label">Sale</span>
+          <span class="pg-sticky-value">{{ formatPkr(summary.sale) }}</span>
+          <span v-if="summary.hasDraftDelta" class="pg-sticky-was">
+            was {{ formatPkr(summary.saleBefore) }}
+          </span>
+        </div>
+        <div class="pg-sticky-metric">
+          <span class="pg-sticky-label">Profit</span>
+          <span class="pg-sticky-value" :class="{ 'pg-neg': summary.profit < 0 }">
+            {{ formatPkr(summary.profit) }}
+          </span>
+          <span v-if="summary.hasDraftDelta" class="pg-sticky-was">
+            was {{ formatPkr(summary.profitBefore) }}
+          </span>
+        </div>
+        <div class="pg-sticky-metric">
+          <span class="pg-sticky-label">Margin</span>
+          <span class="pg-sticky-value">
+            {{ summary.margin != null ? `${summary.margin}%` : "—" }}
+          </span>
+        </div>
+        <div v-if="summary.changedGroups" class="pg-sticky-metric">
+          <span class="pg-sticky-label">Pending</span>
+          <span class="pg-sticky-value">
+            {{ summary.changedGroups }}
+            <span class="pg-sticky-pending-sub">grp</span>
+            · {{ summary.changedProducts || 0 }}
+            <span class="pg-sticky-pending-sub">prod</span>
+          </span>
+        </div>
+      </div>
+      <div class="pg-sticky-actions">
+        <NButton size="small" :disabled="!summary.changedGroups" @click="resetDrafts">
+          Reset drafts
+        </NButton>
+        <NButton
+          size="small"
+          type="primary"
+          :disabled="!supabaseConfigured || !summary.changedGroups"
+          :loading="saving"
+          @click="confirmSave"
+        >
+          Save{{ summary.changedGroups ? ` (${summary.changedGroups})` : "" }}
+        </NButton>
+      </div>
+    </div>
 
     <div class="app-table-scroll">
       <NDataTable
@@ -787,48 +1111,88 @@ onMounted(load);
         :columns="columns"
         :data="groups"
         :row-key="(r) => r.key"
-        :scroll-x="1180"
+        :scroll-x="1280"
         size="small"
-        :row-class-name="(r) => (r.changed ? 'pg-row-changed' : r.outsideRange ? 'pg-row-outside' : '')"
+        :row-class-name="(r) =>
+          r.changed
+            ? 'pg-row-changed'
+            : r.rowType === 'multi'
+              ? 'pg-row-multi'
+              : r.outsideRange
+                ? 'pg-row-outside'
+                : ''
+        "
       />
     </div>
   </div>
 </template>
 
 <style scoped>
-.pg-cards {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
+.pg-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
 }
-.pg-card {
-  background: linear-gradient(160deg, #fff 0%, #f8fafc 100%);
+.pg-sticky--pending {
+  border-color: var(--app-warning-border, #fb923c);
+  background: var(--app-warning-bg-soft, #fff7ed);
 }
-.pg-card-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: #6b7280;
+.pg-sticky-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  align-items: baseline;
+  min-width: 0;
+  flex: 1 1 240px;
+}
+.pg-sticky-metric {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+.pg-sticky-label {
+  font-size: 11px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+  color: #6b7280;
 }
-.pg-card-value {
-  font-size: 1.35rem;
+.pg-sticky-value {
+  font-size: 1.05rem;
   font-weight: 800;
   color: #111827;
-  margin-top: 4px;
-  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
 }
-.pg-card-hint {
-  font-size: 11px;
-  color: #9ca3af;
-  margin-top: 4px;
-}
-.pg-card-delta {
+.pg-sticky-was {
   font-size: 12px;
-  color: #b45309;
   font-weight: 600;
-  margin-top: 2px;
+  color: var(--app-warning-accent, #c2410c);
+}
+.pg-sticky-pending-sub {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.pg-sticky-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  flex: 0 0 auto;
 }
 .pg-ranges {
   margin-top: 12px;
@@ -872,6 +1236,26 @@ onMounted(load);
 }
 :deep(.pg-row-outside td) {
   background: #f8fafc !important;
+}
+:deep(.pg-row-multi td) {
+  background: #f0fdfa !important;
+}
+.pg-multi-drafts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 0;
+}
+.pg-multi-draft-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pg-multi-draft-label {
+  flex: 0 0 64px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #6b7280;
 }
 :deep(.pg-expand) {
   margin: 4px 8px 12px 36px;
@@ -931,13 +1315,23 @@ onMounted(load);
   color: #9ca3af;
 }
 @media (max-width: 900px) {
-  .pg-cards {
+  .pg-sticky-metrics {
+    display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    width: 100%;
   }
 }
 @media (max-width: 768px) {
-  .pg-cards {
-    grid-template-columns: 1fr;
+  .pg-sticky {
+    top: 0;
+    padding: 10px 12px;
+  }
+  .pg-sticky-actions {
+    width: 100%;
+  }
+  .pg-sticky-actions :deep(.n-button) {
+    flex: 1 1 auto;
   }
   :deep(.pg-expand) {
     margin-left: 8px;
