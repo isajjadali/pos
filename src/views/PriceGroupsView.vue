@@ -16,9 +16,11 @@ import {
   useDialog,
 } from "naive-ui";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
+import PricingHelperCard from "../components/PricingHelperCard.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { formatPkr, marginPercent } from "../utils/format.js";
+import { bandForCost, suggestedSaleFromCost } from "../utils/pricingHelper.js";
 import { listActiveVendorOptions } from "../services/vendors.js";
 import {
   listProductsForPriceGroups,
@@ -490,6 +492,58 @@ function setDraft(key, value) {
   drafts.value = next;
 }
 
+/** Fill New sale drafts from pricing-helper band margins (piece groups + multi piece). */
+function applyPricingSuggestions(cfg) {
+  let filled = 0;
+  const nextDrafts = { ...drafts.value };
+  const nextMulti = { ...multiDrafts.value };
+
+  for (const g of groups.value) {
+    if (g.rowType === "multi") {
+      const p = g.products[0];
+      if (!p) continue;
+      const cost = productCost(p);
+      const band = bandForCost(cost, cfg);
+      const piece = suggestedSaleFromCost(cost, band.marginPct);
+      if (piece <= 0) continue;
+      const cur = resolveMultiDraft(g.key, p);
+      nextMulti[g.key] = {
+        piece: money(piece),
+        pack: g.hasPack
+          ? money(suggestedSaleFromCost(cost * Math.max(1, g.packPcs || 1), band.marginPct))
+          : money(piece),
+        box:
+          g.hasBox && g.boxPcs
+            ? money(suggestedSaleFromCost(cost * g.boxPcs, band.marginPct))
+            : cur.box,
+      };
+      filled += 1;
+      continue;
+    }
+
+    const cost =
+      g.purchaseCost != null && Number.isFinite(Number(g.purchaseCost))
+        ? Number(g.purchaseCost)
+        : g.rangeMin != null
+          ? Number(g.rangeMin)
+          : g.products[0]
+            ? productCost(g.products[0])
+            : 0;
+    if (cost <= 0) continue;
+    const band = bandForCost(cost, cfg);
+    const sale = suggestedSaleFromCost(cost, band.marginPct);
+    if (sale <= 0) continue;
+    nextDrafts[g.key] = money(sale);
+    filled += 1;
+  }
+
+  drafts.value = nextDrafts;
+  multiDrafts.value = nextMulti;
+  message.success(
+    `Filled suggested sale on ${filled} row(s). Review drafts, then Save.`
+  );
+}
+
 function setMultiDraft(row, field, value) {
   const p = row.products[0];
   if (!p) return;
@@ -958,7 +1012,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="app-page">
+  <div>
     <h1 style="margin-top: 0">Price groups</h1>
     <SupabaseRequiredAlert />
     <NText depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
@@ -967,6 +1021,8 @@ onMounted(load);
       <strong>Pack / box</strong> products stay as their own rows — edit Pc, Pack, and Box prices
       separately. Sale value always uses piece price × stock.
     </NText>
+
+    <PricingHelperCard @apply-suggestions="applyPricingSuggestions" />
 
     <NCard size="small" title="How to group" style="margin-bottom: 12px">
       <NRadioGroup v-model:value="groupMode" name="group_mode">

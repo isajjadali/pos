@@ -336,7 +336,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div>
+  <div class="app-page app-page--fill">
     <h1 style="margin-top: 0">Vendors</h1>
     <SupabaseRequiredAlert />
     <NAlert
@@ -369,26 +369,29 @@ onMounted(load);
       </NButton>
       <NButton :disabled="!supabaseConfigured" @click="load">Refresh</NButton>
     </NSpace>
-    <NDataTable
-      v-model:checked-row-keys="checkedRowKeys"
-      :row-key="(r) => r.id"
-      :loading="loading"
-      :columns="columns"
-      :data="rows"
-      :scroll-x="tableScrollX"
-      :remote="true"
-      @update:sorter="onTableSorterUpdate"
-      :pagination="{
-        page,
-        pageSize,
-        itemCount: total,
-        showSizePicker: true,
-        pageSizes: [10, 20, 50],
-        prefix: paginationTotalPrefix,
-        onUpdatePage: onPageChange,
-        onUpdatePageSize: onPageSizeChange,
-      }"
-    />
+    <div class="app-table-panel">
+      <NDataTable
+        v-model:checked-row-keys="checkedRowKeys"
+        :row-key="(r) => r.id"
+        :loading="loading"
+        :columns="columns"
+        :data="rows"
+        :scroll-x="tableScrollX"
+        :remote="true"
+        flex-height
+        @update:sorter="onTableSorterUpdate"
+        :pagination="{
+          page,
+          pageSize,
+          itemCount: total,
+          showSizePicker: true,
+          pageSizes: [10, 20, 50],
+          prefix: paginationTotalPrefix,
+          onUpdatePage: onPageChange,
+          onUpdatePageSize: onPageSizeChange,
+        }"
+      />
+    </div>
     <NModal
       v-model:show="showModal"
       preset="card"

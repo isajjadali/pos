@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, nextTick } from "vue";
+import { ref, computed, watch, nextTick, h } from "vue";
 import {
   NModal,
   NButton,
@@ -12,7 +12,7 @@ import {
   NAlert,
   useMessage,
 } from "naive-ui";
-import { formatPkr } from "../utils/format.js";
+import { formatPkr, marginPercent } from "../utils/format.js";
 import { fitNameColumnWidth } from "../utils/tableColumns.js";
 import { updateProductsBulk } from "../services/products.js";
 import CreatableVendorSelect from "./CreatableVendorSelect.vue";
@@ -169,8 +169,35 @@ const reviewColumns = computed(() => {
       width: 100,
       render: (r) => formatPkr(r.selling_price),
     },
+    {
+      title: "Gross %",
+      key: "margin",
+      width: 80,
+      render: (r) => {
+        const m = marginPercent(r.selling_price, r.purchase_price);
+        if (m == null) return "—";
+        const below = Number(r.selling_price) + 0.009 < Number(r.purchase_price);
+        return h(
+          "span",
+          { style: below || m < 0 ? "color:#dc2626;font-weight:700" : undefined },
+          `${m}%`
+        );
+      },
+    },
   ];
 });
+
+function rowMarginLabel(row) {
+  const m = marginPercent(row.selling_price, row.purchase_price);
+  if (m == null) return "—";
+  return `${m}%`;
+}
+
+function rowMarginNeg(row) {
+  const m = marginPercent(row.selling_price, row.purchase_price);
+  if (m == null) return false;
+  return m < 0 || Number(row.selling_price) + 0.009 < Number(row.purchase_price);
+}
 
 async function confirmUpdate() {
   if (!reviewRows.value.length) return;
@@ -209,7 +236,7 @@ function close() {
     :show="show"
     preset="card"
     :title="step === 'entry' ? 'Bulk edit products' : 'Review bulk edit'"
-    style="width: min(960px, 96vw)"
+    style="width: min(1120px, 98vw)"
     @update:show="(v) => !v && close()"
   >
     <template v-if="step === 'entry'">
@@ -245,6 +272,7 @@ function close() {
           <span>Purchase</span>
           <span>Pack pcs</span>
           <span>Sale</span>
+          <span title="Gross margin (default unit)">Gross %</span>
           <span />
         </div>
         <div v-for="(row, rowIndex) in draftRows" :key="row.id" class="bulk-edit-row">
@@ -268,6 +296,7 @@ function close() {
               v-model:value="row.current_stock"
               :min="0"
               :precision="0"
+              :show-button="false"
               size="small"
               style="width: 100%"
               @keydown.enter.prevent="onEnter(rowIndex, 2)"
@@ -277,6 +306,7 @@ function close() {
             <NInputNumber
               v-model:value="row.purchase_price"
               :min="0"
+              :show-button="false"
               size="small"
               style="width: 100%"
               @keydown.enter.prevent="onEnter(rowIndex, 3)"
@@ -287,6 +317,7 @@ function close() {
               v-model:value="row.pieces_per_pack"
               :min="1"
               :precision="0"
+              :show-button="false"
               size="small"
               style="width: 100%"
               @keydown.enter.prevent="onEnter(rowIndex, 4)"
@@ -296,11 +327,19 @@ function close() {
             <NInputNumber
               v-model:value="row.selling_price"
               :min="0"
+              :show-button="false"
               size="small"
               style="width: 100%"
               @keydown.enter.prevent="onEnter(rowIndex, 5)"
             />
           </div>
+          <span
+            class="bulk-margin"
+            :class="{ 'bulk-margin--neg': rowMarginNeg(row) }"
+            :title="'Gross margin (default unit)'"
+          >
+            {{ rowMarginLabel(row) }}
+          </span>
           <NButton quaternary size="tiny" type="error" @click="removeRow(rowIndex)">×</NButton>
         </div>
       </div>
@@ -351,7 +390,7 @@ function close() {
 .bulk-edit-head,
 .bulk-edit-row {
   display: grid;
-  grid-template-columns: 100px 1fr 64px 88px 64px 88px 36px;
+  grid-template-columns: 110px minmax(140px, 1fr) 88px 110px 88px 110px 72px 36px;
   gap: 8px;
   align-items: center;
 }
@@ -364,5 +403,14 @@ function close() {
   background: var(--n-color);
   padding-bottom: 4px;
   z-index: 1;
+}
+.bulk-margin {
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #0f766e;
+}
+.bulk-margin--neg {
+  color: #dc2626;
 }
 </style>

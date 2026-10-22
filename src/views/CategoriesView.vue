@@ -219,7 +219,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="app-page">
+  <div class="app-page app-page--fill">
     <h1 style="margin-top: 0">Categories</h1>
     <SupabaseRequiredAlert />
     <NText depth="3" style="display: block; margin-bottom: 16px; font-size: 13px">
@@ -253,23 +253,26 @@ onMounted(async () => {
       </NButton>
     </NSpace>
 
-    <NDataTable
-      :loading="loading"
-      :columns="columns"
-      :data="paged"
-      :row-key="(r) => r.id"
-      :scroll-x="640"
-      :pagination="{
-        page,
-        pageSize,
-        itemCount: filtered.length,
-        showSizePicker: true,
-        pageSizes: [10, 20, 50, 100],
-        prefix: paginationTotalPrefix,
-        onUpdatePage: onPageChange,
-        onUpdatePageSize: onPageSizeChange,
-      }"
-    />
+    <div class="app-table-panel">
+      <NDataTable
+        :loading="loading"
+        :columns="columns"
+        :data="paged"
+        :row-key="(r) => r.id"
+        :scroll-x="640"
+        flex-height
+        :pagination="{
+          page,
+          pageSize,
+          itemCount: filtered.length,
+          showSizePicker: true,
+          pageSizes: [10, 20, 50, 100],
+          prefix: paginationTotalPrefix,
+          onUpdatePage: onPageChange,
+          onUpdatePageSize: onPageSizeChange,
+        }"
+      />
+    </div>
 
     <NModal
       v-model:show="showEdit"

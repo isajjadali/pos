@@ -27,6 +27,74 @@ h1 {
   font-size: 1.5rem;
   font-weight: 600;
   color: #111827;
+  flex: 0 0 auto;
+}
+
+/*
+ * Shell keeps a fixed content height. Most pages scroll normally.
+ * Only views with .app-page--fill (Products, Vendors, Categories, Barcode)
+ * pin the table in-window with pagination always visible.
+ */
+.app-shell .app-content {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+}
+
+.app-shell .app-content > .n-layout-scroll-container {
+  height: 100% !important;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden !important;
+}
+
+/* Layout RouterView wrapper — scroll by default */
+.app-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* When a fill page is mounted, lock outer scroll and stretch */
+.app-page:has(> .app-page--fill) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-page--fill {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-page--fill > * {
+  flex: 0 0 auto;
+}
+
+.app-page--fill > .app-table-panel {
+  flex: 1 1 auto;
+  min-height: 220px;
+}
+
+.app-table-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.app-table-panel > .n-data-table {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
 }
 
 /* Data table row checkboxes — extra visible on light rows */

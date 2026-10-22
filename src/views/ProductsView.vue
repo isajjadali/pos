@@ -836,7 +836,7 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
 </script>
 
 <template>
-  <div>
+  <div class="app-page app-page--fill">
     <h1 style="margin-top: 0">Products</h1>
     <NText v-if="!canManageProducts" depth="2" style="display: block; margin-bottom: 12px">
       Catalog view — sale prices only. Use POS to place orders.
@@ -943,26 +943,29 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
       </NButton>
       <NButton :disabled="!supabaseConfigured" @click="reloadTableAndCatalog">Refresh</NButton>
     </NSpace>
-    <NDataTable
-      v-model:checked-row-keys="checkedRowKeys"
-      :row-key="(row) => row.id"
-      :loading="loading"
-      :columns="columns"
-      :data="rows"
-      :scroll-x="tableScrollX"
-      :remote="true"
-      @update:sorter="onTableSorterUpdate"
-      :pagination="{
-        page,
-        pageSize,
-        itemCount: total,
-        showSizePicker: true,
-        pageSizes: [10, 20, 50, 100],
-        prefix: paginationTotalPrefix,
-        onUpdatePage: onPageChange,
-        onUpdatePageSize: onPageSizeChange,
-      }"
-    />
+    <div class="app-table-panel">
+      <NDataTable
+        v-model:checked-row-keys="checkedRowKeys"
+        :row-key="(row) => row.id"
+        :loading="loading"
+        :columns="columns"
+        :data="rows"
+        :scroll-x="tableScrollX"
+        :remote="true"
+        flex-height
+        @update:sorter="onTableSorterUpdate"
+        :pagination="{
+          page,
+          pageSize,
+          itemCount: total,
+          showSizePicker: true,
+          pageSizes: [10, 20, 50, 100],
+          prefix: paginationTotalPrefix,
+          onUpdatePage: onPageChange,
+          onUpdatePageSize: onPageSizeChange,
+        }"
+      />
+    </div>
 
     <NModal
       v-model:show="showModal"

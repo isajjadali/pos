@@ -554,7 +554,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div>
+  <div class="app-page app-page--fill">
     <h1 style="margin-top: 0">Barcode printing</h1>
     <SupabaseRequiredAlert />
     <NRadioGroup v-model:value="printMode" style="margin-bottom: 12px">
@@ -635,7 +635,10 @@ onMounted(() => {
         Pending: {{ pendingCount }} · Done: {{ noPendingCount }}
       </span>
     </NSpace>
-    <div class="app-table-scroll">
+    <p style="margin: 0 0 8px; font-size: 13px; color: #6b7280">
+      Recent print jobs: {{ jobs.length }} loaded
+    </p>
+    <div class="app-table-panel">
       <NDataTable
         v-model:checked-row-keys="selected"
         :row-key="(r) => r.id"
@@ -644,12 +647,11 @@ onMounted(() => {
         :data="pagedRows"
         :scroll-x="tableScrollX"
         :remote="true"
+        flex-height
         @update:sorter="onTableSorterUpdate"
         :pagination="pagination"
       />
     </div>
-    <h3>Recent print jobs</h3>
-    <pre style="font-size: 12px">{{ jobs.length }} jobs loaded</pre>
   </div>
 </template>
 

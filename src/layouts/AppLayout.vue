@@ -85,7 +85,11 @@ async function logout() {
 const contentStyle = computed(() => ({
   padding: isMobile.value ? "12px" : "24px",
   background: "#f9fafb",
-  minHeight: "100vh",
+  height: "100%",
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
+  boxSizing: "border-box",
 }));
 
 const mobileNavOpen = ref(false);
@@ -299,6 +303,7 @@ const mobilePageTitle = computed(() => {
   color: inherit;
 }
 .shortcut-bar {
+  flex: 0 0 auto;
   margin: -8px 0 12px;
   display: flex;
   align-items: center;
@@ -330,6 +335,7 @@ const mobilePageTitle = computed(() => {
   border-radius: 999px;
 }
 .app-mobile-bar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 10px;
