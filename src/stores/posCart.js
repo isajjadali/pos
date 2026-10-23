@@ -1,10 +1,35 @@
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { computeScheduledDiscountPkr, moneyClose } from "../utils/scheduledDiscount.js";
 import { defaultPosSaleUnit, resolveSaleUnit, unitLabel } from "../utils/saleUnits.js";
 
+const CART_STORAGE_KEY = "dw_pos_cart_v1";
+
 function newLineId() {
   return crypto.randomUUID();
+}
+
+function loadPersistedCarts() {
+  try {
+    const raw = localStorage.getItem(CART_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.carts)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function savePersistedCarts(carts, activeCartId, cartSeq) {
+  try {
+    localStorage.setItem(
+      CART_STORAGE_KEY,
+      JSON.stringify({ carts, activeCartId, cartSeq, savedAt: Date.now() })
+    );
+  } catch {
+    /* quota */
+  }
 }
 
 function makeCart(label) {
@@ -354,8 +379,37 @@ export const usePosCartStore = defineStore("posCart", () => {
     }
   }
 
+  let persistWatchAttached = false;
+
+  function attachPersist() {
+    if (persistWatchAttached) return;
+    persistWatchAttached = true;
+    watch(
+      [carts, activeCartId],
+      () => {
+        savePersistedCarts(carts.value, activeCartId.value, cartSeq);
+      },
+      { deep: true }
+    );
+  }
+
   function init() {
-    if (!carts.value.length) ensureActiveCart();
+    if (!carts.value.length) {
+      const saved = loadPersistedCarts();
+      if (saved?.carts?.length) {
+        carts.value = saved.carts;
+        activeCartId.value = saved.activeCartId || saved.carts[0]?.id || null;
+        const labels = saved.carts.map((c) => {
+          const m = String(c.label || "").match(/Sale\s+(\d+)/i);
+          return m ? Number(m[1]) : 0;
+        });
+        cartSeq = Math.max(saved.cartSeq || 1, ...labels, 0) + 1;
+      } else {
+        ensureActiveCart();
+      }
+    }
+    if (!activeCart.value) ensureActiveCart();
+    attachPersist();
   }
 
   function afterCompletedSale() {

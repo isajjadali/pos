@@ -16,6 +16,7 @@ import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { shopifyOrdersList, shopifyOrderGet } from "../services/shopify.js";
 import { formatPkr } from "../utils/format.js";
+import { formatCreatedAt } from "../utils/tableColumns.js";
 
 const message = useMessage();
 const loading = ref(false);
@@ -30,10 +31,15 @@ const accessError = ref("");
 const columns = computed(() => [
   { title: "Order", key: "name", width: 110 },
   {
-    title: "Date",
+    title: "Created",
     key: "createdAt",
     width: 170,
-    render: (r) => (r.createdAt ? new Date(r.createdAt).toLocaleString() : "—"),
+    sorter: (a, b) => {
+      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return ta - tb;
+    },
+    render: (r) => formatCreatedAt(r.createdAt),
   },
   {
     title: "Customer",

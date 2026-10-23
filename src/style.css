@@ -84,6 +84,18 @@ h1 {
   min-height: 220px;
 }
 
+/* Filters on one row, actions on the next (wraps on narrow screens) */
+.app-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.app-toolbar--tight {
+  margin-bottom: 12px;
+}
+
 .app-table-panel {
   display: flex;
   flex-direction: column;

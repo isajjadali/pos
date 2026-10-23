@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, h, watch, nextTick } from "vue";
+import { ref, computed, onMounted, onUnmounted, h, watch, nextTick } from "vue";
 import {
   NButton,
   NSpace,
@@ -12,12 +12,15 @@ import {
   NCard,
   NRadioGroup,
   NRadio,
+  NDrawer,
+  NDrawerContent,
   useMessage,
   useDialog,
 } from "naive-ui";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
 import PricingHelperCard from "../components/PricingHelperCard.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
+import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { formatPkr, marginPercent } from "../utils/format.js";
 import { bandForCost, suggestedSaleFromCost } from "../utils/pricingHelper.js";
@@ -27,6 +30,7 @@ import {
   bulkUpdateSellingPrices,
   priceGroupKey,
 } from "../services/priceGroups.js";
+import { PRODUCT_CATALOG_UPDATED } from "../services/productCatalog.js";
 import { rowNumberColumn, tableSorter } from "../utils/tableColumns.js";
 import {
   UNIT_LISTING_FILTER_OPTIONS,
@@ -54,7 +58,7 @@ const products = ref([]);
 const vendorOptions = ref([]);
 
 const search = ref("");
-const vendorFilter = ref(null);
+const vendorFilter = ref([]);
 const activeOnly = ref(true);
 const includeZeroStock = ref(true);
 /** all | piece | pack | box | multi */
@@ -134,15 +138,25 @@ function isMultiUnitProduct(p) {
 const hasActiveFilters = computed(
   () =>
     Boolean(search.value.trim()) ||
-    vendorFilter.value != null ||
+    (vendorFilter.value?.length ?? 0) > 0 ||
     !activeOnly.value ||
     !includeZeroStock.value ||
     unitFilter.value !== "all"
 );
 
+/** Secondary filters only (inside More filters) — drives badge count. */
+const moreFiltersCount = computed(() => {
+  let n = 0;
+  if (unitFilter.value !== "all") n += 1;
+  if (!activeOnly.value) n += 1;
+  if (!includeZeroStock.value) n += 1;
+  return n;
+});
+const showMoreFilters = ref(false);
+
 function clearFilters() {
   search.value = "";
-  vendorFilter.value = null;
+  vendorFilter.value = [];
   activeOnly.value = true;
   includeZeroStock.value = true;
   unitFilter.value = "all";
@@ -178,9 +192,11 @@ function productSaleLabel(p) {
 
 const filteredProducts = computed(() => {
   const q = search.value.trim().toLowerCase();
+  const vendors = Array.isArray(vendorFilter.value) ? vendorFilter.value.filter(Boolean) : [];
+  const vendorSet = vendors.length ? new Set(vendors.map(String)) : null;
   return (products.value ?? []).filter((p) => {
     if (!includeZeroStock.value && (Number(p.current_stock) || 0) <= 0) return false;
-    if (vendorFilter.value && p.vendor_id !== vendorFilter.value) return false;
+    if (vendorSet && !vendorSet.has(String(p.vendor_id))) return false;
     if (!productMatchesUnitFilter(p, unitFilter.value)) return false;
     if (!q) return true;
     const hay = `${p.name ?? ""} ${p.external_product_id ?? ""}`.toLowerCase();
@@ -1008,13 +1024,18 @@ const columns = computed(() => [
   },
 ]);
 
-onMounted(load);
+onMounted(() => {
+  window.addEventListener(PRODUCT_CATALOG_UPDATED, load);
+  load();
+});
+onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
 </script>
 
 <template>
   <div>
     <h1 style="margin-top: 0">Price groups</h1>
     <SupabaseRequiredAlert />
+    <OfflinePendingBanner />
     <NText depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
       <strong>Piece-only</strong> products group by purchase cost. Set one
       <strong>New sale price</strong> for the whole group.
@@ -1071,41 +1092,55 @@ onMounted(load);
       </div>
     </NCard>
 
-    <NSpace class="app-filter-stack" style="margin-bottom: 12px" wrap>
-      <NInput
-        v-model:value="search"
-        clearable
-        placeholder="Search name / product ID"
-        style="width: 220px"
-      />
-      <NSelect
-        v-model:value="vendorFilter"
-        :options="vendorOptions"
-        clearable
-        filterable
-        placeholder="Vendor"
-        style="width: 200px"
-      />
-      <NSelect
-        v-model:value="unitFilter"
-        :options="unitFilterOptions"
-        placeholder="Unit"
-        style="width: 150px"
-      />
-      <NSwitch v-model:value="activeOnly">
-        <template #checked>Active only</template>
-        <template #unchecked>Include inactive</template>
-      </NSwitch>
-      <NSwitch v-model:value="includeZeroStock">
-        <template #checked>Include 0 stock</template>
-        <template #unchecked>Hide 0 stock</template>
-      </NSwitch>
-      <NText depth="3" style="font-size: 12px; max-width: 280px">
-        New sale applies to pack price when pack is set, else piece.
-      </NText>
-      <ClearFiltersButton :disabled="!hasActiveFilters" @clear="clearFilters" />
-      <NButton :disabled="!supabaseConfigured" :loading="loading" @click="load">Refresh</NButton>
-    </NSpace>
+    <div class="app-toolbar app-toolbar--tight">
+      <NSpace class="app-filter-stack" align="center" wrap>
+        <NInput
+          v-model:value="search"
+          clearable
+          placeholder="Search name / product ID"
+          style="width: 220px"
+        />
+        <NSelect
+          v-model:value="vendorFilter"
+          :options="vendorOptions"
+          multiple
+          clearable
+          filterable
+          max-tag-count="responsive"
+          placeholder="Vendor"
+          style="min-width: 200px; max-width: 320px"
+        />
+        <NButton :type="moreFiltersCount ? 'warning' : 'default'" @click="showMoreFilters = true">
+          More filters{{ moreFiltersCount ? ` (${moreFiltersCount})` : "" }}
+        </NButton>
+        <NButton :disabled="!supabaseConfigured" :loading="loading" @click="load">Refresh</NButton>
+        <ClearFiltersButton v-if="hasActiveFilters" :disabled="false" @clear="clearFilters" />
+      </NSpace>
+    </div>
+
+    <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
+      <NDrawerContent title="More filters" closable :native-scrollbar="false">
+        <div class="pg-more-filters">
+          <NSelect
+            v-model:value="unitFilter"
+            :options="unitFilterOptions"
+            placeholder="Unit"
+            style="width: 100%"
+          />
+          <NSwitch v-model:value="activeOnly">
+            <template #checked>Active only</template>
+            <template #unchecked>Include inactive</template>
+          </NSwitch>
+          <NSwitch v-model:value="includeZeroStock">
+            <template #checked>Include 0 stock</template>
+            <template #unchecked>Hide 0 stock</template>
+          </NSwitch>
+          <NText depth="3" style="font-size: 12px">
+            New sale applies to pack price when pack is set, else piece.
+          </NText>
+        </div>
+      </NDrawerContent>
+    </NDrawer>
 
     <div class="pg-sticky" :class="{ 'pg-sticky--pending': summary.changedGroups }">
       <div class="pg-sticky-metrics">
@@ -1184,6 +1219,12 @@ onMounted(load);
 </template>
 
 <style scoped>
+.pg-more-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 16px;
+}
 .pg-sticky {
   position: sticky;
   top: 0;

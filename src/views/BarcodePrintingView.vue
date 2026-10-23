@@ -11,12 +11,23 @@ import {
   NSelect,
   NSwitch,
   NText,
+  NDrawer,
+  NDrawerContent,
+  NDropdown,
+  NButtonGroup,
+  NIcon,
   useMessage,
 } from "naive-ui";
+import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
-import { listProductsForPrinting, reconcilePrint, listPrintJobs } from "../services/barcodes.js";
+import {
+  listProductsForPrinting,
+  reconcilePrint,
+  listPrintJobs,
+  syncCatalogAfterPrintBatch,
+} from "../services/barcodes.js";
 import { getSettings } from "../services/settings.js";
 import { buildBatchZpl } from "../utils/zebraZpl.js";
 import { resolveBrowserPrintBase, sendZplToZebra } from "../utils/zebraBrowserPrint.js";
@@ -24,6 +35,7 @@ import {
   rowNumberColumn,
   tableSorter,
   sortRowsByColumn,
+  createdAtColumn,
   fitNameColumnWidth,
   paginationTotalPrefix,
 } from "../utils/tableColumns.js";
@@ -153,6 +165,15 @@ const hasActiveFilters = computed(
     unitFilter.value !== "all"
 );
 
+/** Secondary filters only (inside More filters) — drives badge count. */
+const moreFiltersCount = computed(() => {
+  let n = 0;
+  if (unitFilter.value !== "all") n += 1;
+  if (stockFilterEnabled.value) n += 1;
+  return n;
+});
+const showMoreFilters = ref(false);
+
 function clearFilters() {
   search.value = "";
   pendingFilter.value = "pending";
@@ -166,6 +187,24 @@ function clearFilters() {
   page.value = 1;
   selected.value = [];
   load();
+}
+
+const barcodeActionOptions = computed(() => [
+  {
+    label: "Select page",
+    key: "select-page",
+    disabled: !pagedRows.value.length,
+  },
+  {
+    label: "Clear selection",
+    key: "clear-selection",
+    disabled: !selected.value.length,
+  },
+]);
+
+function onBarcodeActionSelect(key) {
+  if (key === "select-page") selectPage();
+  else if (key === "clear-selection") clearSelection();
 }
 
 const filteredRows = computed(() => {
@@ -210,7 +249,7 @@ const noPendingCount = computed(
 
 const nameColumnWidth = computed(() => fitNameColumnWidth(pagedRows.value));
 const tableScrollX = computed(
-  () => 52 + 40 + nameColumnWidth.value + 120 + 70 + 110 + 168 + 90 + 24
+  () => 52 + 40 + nameColumnWidth.value + 120 + 70 + 110 + 168 + 158 + 90 + 24
 );
 
 const columns = computed(() => {
@@ -264,6 +303,7 @@ const columns = computed(() => {
         ]);
       },
     },
+    createdAtColumn(),
     {
       title: "",
       key: "print",
@@ -451,6 +491,7 @@ async function reconcileBatch(batch) {
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batch.length) }, () => worker()));
+  await syncCatalogAfterPrintBatch().catch(() => {});
 }
 
 async function runPrint(batch) {
@@ -570,71 +611,93 @@ onMounted(() => {
       :min="1"
       style="width: 120px; margin-bottom: 12px"
     />
-    <NSpace class="app-filter-stack" style="margin-bottom: 12px" align="center" wrap>
-      <NInput
-        v-model:value="search"
-        placeholder="Search"
-        clearable
-        style="width: 220px"
-        @keyup.enter="load"
-      />
-      <NButton @click="load">Search</NButton>
-      <NSelect
-        v-model:value="pendingFilter"
-        :options="pendingFilterOptions"
-        style="width: 200px"
-      />
-      <NSelect
-        v-model:value="unitFilter"
-        :options="unitFilterOptions"
-        placeholder="Unit"
-        style="width: 150px"
-      />
-      <NSpace align="center" :size="8" wrap>
-        <NSwitch v-model:value="stockFilterEnabled" size="small" />
-        <NText depth="3" style="font-size: 13px">Stock filter</NText>
+    <div class="app-toolbar app-toolbar--tight">
+      <NSpace class="app-filter-stack" align="center" wrap>
+        <NInput
+          v-model:value="search"
+          placeholder="Search"
+          clearable
+          style="width: 220px"
+          @keyup.enter="load"
+        />
         <NSelect
-          v-model:value="stockFilterMode"
-          :options="stockFilterModeOptions"
-          :disabled="!stockFilterEnabled"
-          style="width: 168px"
+          v-model:value="pendingFilter"
+          :options="pendingFilterOptions"
+          style="width: 200px"
         />
-        <NInputNumber
-          v-model:value="stockFilterQty"
-          :min="0"
-          :disabled="!stockFilterEnabled"
-          style="width: 100px"
-        />
-      </NSpace>
-      <ClearFiltersButton :disabled="!hasActiveFilters" @clear="clearFilters" />
-      <NButton quaternary :disabled="!pagedRows.length" @click="selectPage">
-        Select page
-      </NButton>
-      <NButton quaternary :disabled="!selected.length" @click="clearSelection">
-        Clear selection
-      </NButton>
-      <NButton type="primary" :loading="printing" :disabled="printing" @click="printSelected">
-        Print selected
-      </NButton>
-      <span
-        v-if="selected.length && !printStatus"
-        class="selection-barcode-total"
-      >
-        {{ selectedPrintStats.products }} product(s) ·
-        <strong>{{ selectedPrintStats.labels }}</strong> barcode(s) to print
-        <NText
-          v-if="selectedPrintStats.zeroQty"
-          depth="3"
-          style="font-size: 12px; margin-left: 4px"
+        <NButton :type="moreFiltersCount ? 'warning' : 'default'" @click="showMoreFilters = true">
+          More filters{{ moreFiltersCount ? ` (${moreFiltersCount})` : "" }}
+        </NButton>
+        <NButtonGroup>
+          <NButton type="primary" :loading="printing" :disabled="printing" @click="printSelected">
+            Print selected{{ selected.length ? ` (${selected.length})` : "" }}
+          </NButton>
+          <NDropdown
+            trigger="click"
+            :options="barcodeActionOptions"
+            @select="onBarcodeActionSelect"
+          >
+            <NButton
+              type="primary"
+              :disabled="printing"
+              aria-label="More print actions"
+              style="padding: 0 10px"
+            >
+              <NIcon :component="ChevronDownOutline" :size="16" />
+            </NButton>
+          </NDropdown>
+        </NButtonGroup>
+        <NButton :loading="loading" @click="load">Refresh</NButton>
+        <ClearFiltersButton v-if="hasActiveFilters" :disabled="false" @clear="clearFilters" />
+        <span
+          v-if="selected.length && !printStatus"
+          class="selection-barcode-total"
         >
-          ({{ selectedPrintStats.zeroQty }} with 0 — skipped)
-        </NText>
-      </span>
-      <span v-if="printStatus" style="color: #0f766e; font-size: 13px">{{ printStatus }}</span>
-      <span v-else style="color: #6b7280; font-size: 12px">
-        Pending: {{ pendingCount }} · Done: {{ noPendingCount }}
-      </span>
-    </NSpace>
+          {{ selectedPrintStats.products }} product(s) ·
+          <strong>{{ selectedPrintStats.labels }}</strong> barcode(s) to print
+          <NText
+            v-if="selectedPrintStats.zeroQty"
+            depth="3"
+            style="font-size: 12px; margin-left: 4px"
+          >
+            ({{ selectedPrintStats.zeroQty }} with 0 — skipped)
+          </NText>
+        </span>
+        <span v-if="printStatus" style="color: #0f766e; font-size: 13px">{{ printStatus }}</span>
+        <span v-else style="color: #6b7280; font-size: 12px">
+          Pending: {{ pendingCount }} · Done: {{ noPendingCount }}
+        </span>
+      </NSpace>
+    </div>
+
+    <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
+      <NDrawerContent title="More filters" closable :native-scrollbar="false">
+        <div class="barcode-more-filters">
+          <NSelect
+            v-model:value="unitFilter"
+            :options="unitFilterOptions"
+            placeholder="Unit"
+            style="width: 100%"
+          />
+          <NSpace align="center" :size="8" wrap>
+            <NSwitch v-model:value="stockFilterEnabled" size="small" />
+            <NText depth="3" style="font-size: 13px">Stock filter</NText>
+          </NSpace>
+          <NSelect
+            v-model:value="stockFilterMode"
+            :options="stockFilterModeOptions"
+            :disabled="!stockFilterEnabled"
+            style="width: 100%"
+          />
+          <NInputNumber
+            v-model:value="stockFilterQty"
+            :min="0"
+            :disabled="!stockFilterEnabled"
+            style="width: 100%"
+          />
+        </div>
+      </NDrawerContent>
+    </NDrawer>
     <p style="margin: 0 0 8px; font-size: 13px; color: #6b7280">
       Recent print jobs: {{ jobs.length }} loaded
     </p>
@@ -656,6 +719,12 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.barcode-more-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 16px;
+}
 .selection-barcode-total {
   font-size: 14px;
   color: #374151;

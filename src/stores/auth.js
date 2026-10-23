@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { requireSupabase, supabaseConfigured } from "../lib/supabase.js";
 import { useProductCacheStore, clearProductCatalog, refreshProductCatalog } from "./productCache.js";
+import { useMetaCacheStore, refreshMetaCache } from "./metaCache.js";
 
 export const useAuthStore = defineStore("auth", () => {
   const user = ref(null);
@@ -62,12 +63,14 @@ export const useAuthStore = defineStore("auth", () => {
     const sb = requireSupabase();
     const cache = useProductCacheStore();
     cache.hydrateFromStorage();
+    useMetaCacheStore().hydrateFromStorage();
 
     const { data } = await sb.auth.getSession();
     user.value = data.session?.user ?? null;
     if (user.value) {
       await loadProfile();
-      refreshProductCatalog().catch(() => {});
+      refreshProductCatalog({ force: true }).catch(() => {});
+      refreshMetaCache({ force: true }).catch(() => {});
     } else {
       profileLoaded.value = true;
     }
@@ -79,15 +82,24 @@ export const useAuthStore = defineStore("auth", () => {
 
       // Tab focus often re-emits SIGNED_IN / TOKEN_REFRESHED — don't reload UI for same session
       if (event === "SIGNED_IN" && nextUser && !sameUser) {
-        loadProfile().then(() => refreshProductCatalog().catch(() => {}));
+        loadProfile().then(() => {
+          refreshProductCatalog({ force: true }).catch(() => {});
+          refreshMetaCache({ force: true }).catch(() => {});
+          import("../services/adminOutboxSync.js").then((m) => m.drainAllOfflineQueues());
+        });
       } else if (event === "SIGNED_IN" && nextUser && sameUser && !profileLoaded.value) {
-        loadProfile().then(() => refreshProductCatalog().catch(() => {}));
+        loadProfile().then(() => {
+          refreshProductCatalog({ force: true }).catch(() => {});
+          refreshMetaCache({ force: true }).catch(() => {});
+          import("../services/adminOutboxSync.js").then((m) => m.drainAllOfflineQueues());
+        });
       }
 
       if (event === "SIGNED_OUT") {
         resetProfile();
         profileLoaded.value = true;
         clearProductCatalog();
+        useMetaCacheStore().clear();
       }
     });
     loading.value = false;
@@ -103,7 +115,9 @@ export const useAuthStore = defineStore("auth", () => {
     }
     user.value = data.user;
     await loadProfile();
-    await refreshProductCatalog();
+    await refreshProductCatalog({ force: true });
+    await refreshMetaCache({ force: true }).catch(() => {});
+    import("../services/adminOutboxSync.js").then((m) => m.drainAllOfflineQueues());
     return data;
   }
 
@@ -114,6 +128,7 @@ export const useAuthStore = defineStore("auth", () => {
     resetProfile();
     profileLoaded.value = true;
     clearProductCatalog();
+    useMetaCacheStore().clear();
   }
 
   return {

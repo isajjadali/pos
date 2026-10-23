@@ -2,11 +2,13 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { requireSupabase, supabaseConfigured } from "../lib/supabase.js";
 import { notifyProductCatalogUpdated } from "../utils/catalogSync.js";
+import { vendorInitialsPrefix } from "../utils/titleCase.js";
+import { getEffectiveOnline } from "../services/offlineGuard.js";
 
 const STORAGE_KEY = "dw_product_catalog_v2";
 
 const POS_FIELDS =
-  "id, name, barcode, sku, external_product_id, selling_price, current_stock, is_active, weighted_avg_cost, vendor_id, category_id, updated_at, pieces_per_pack, pieces_per_box, piece_selling_price, pack_selling_price, box_selling_price, default_sale_unit";
+  "id, name, barcode, sku, external_product_id, selling_price, current_stock, is_active, weighted_avg_cost, vendor_id, category_id, created_at, updated_at, pieces_per_pack, pieces_per_box, piece_selling_price, pack_selling_price, box_selling_price, default_sale_unit";
 
 function loadFromStorage() {
   try {
@@ -59,11 +61,15 @@ export const useProductCacheStore = defineStore("productCache", () => {
     }
   }
 
-  async function refresh() {
+  async function refresh({ force = false } = {}) {
     if (!supabaseConfigured) return;
+    // Never hang the UI trying to refresh catalog while offline
+    // (force=true after a successful server write — sticky-offline must not skip sync)
+    if (!force && !getEffectiveOnline()) return;
     loading.value = true;
     error.value = "";
     try {
+      const pendingLocal = products.value.filter((p) => String(p.id).startsWith("local_"));
       const sb = requireSupabase();
       const all = [];
       const pageSize = 1000;
@@ -80,9 +86,13 @@ export const useProductCacheStore = defineStore("productCache", () => {
         if (chunk.length < pageSize) break;
         from += pageSize;
       }
-      products.value = all;
+      const serverIds = new Set(all.map((p) => p.id));
+      products.value = [
+        ...all,
+        ...pendingLocal.filter((p) => !serverIds.has(p.id)),
+      ];
       syncedAt.value = new Date().toISOString();
-      saveToStorage(all, syncedAt.value);
+      saveToStorage(products.value, syncedAt.value);
     } catch (e) {
       error.value = e.message || "Failed to load products";
       throw e;
@@ -109,6 +119,40 @@ export const useProductCacheStore = defineStore("productCache", () => {
     if (!p) return;
     p.current_stock = Math.max(0, Number(p.current_stock) + deltaQty);
     saveToStorage(products.value, syncedAt.value);
+  }
+
+  function upsertProduct(row) {
+    if (!row?.id) return;
+    const idx = products.value.findIndex((p) => p.id === row.id);
+    if (idx === -1) products.value.push({ ...row });
+    else products.value[idx] = { ...products.value[idx], ...row };
+    saveToStorage(products.value, syncedAt.value);
+  }
+
+  function removeProducts(ids) {
+    const set = new Set((ids || []).filter(Boolean));
+    if (!set.size) return;
+    products.value = products.value.filter((p) => !set.has(p.id));
+    saveToStorage(products.value, syncedAt.value);
+  }
+
+  function replaceProductId(oldId, newId) {
+    if (!oldId || !newId || oldId === newId) return;
+    const idx = products.value.findIndex((p) => p.id === oldId);
+    if (idx === -1) return;
+    products.value[idx] = { ...products.value[idx], id: newId };
+    saveToStorage(products.value, syncedAt.value);
+  }
+
+  function nextLocalExternalId(prefixOrVendorName) {
+    const prefix = vendorInitialsPrefix(prefixOrVendorName);
+    let max = 0;
+    const re = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)$`, "i");
+    for (const p of products.value) {
+      const m = String(p.external_product_id || "").match(re);
+      if (m) max = Math.max(max, parseInt(m[1], 10));
+    }
+    return `${prefix}-${max + 1}`;
   }
 
   function searchForPos(term, limit = 30) {
@@ -154,15 +198,19 @@ export const useProductCacheStore = defineStore("productCache", () => {
     clear,
     patchProduct,
     applyStockDelta,
+    upsertProduct,
+    removeProducts,
+    replaceProductId,
+    nextLocalExternalId,
     searchForPos,
     findByScanCode,
   };
 });
 
 /** Call after login or when catalog may have changed on server. */
-export async function refreshProductCatalog() {
+export async function refreshProductCatalog({ force = false } = {}) {
   const store = useProductCacheStore();
-  await store.refresh();
+  await store.refresh({ force });
   notifyProductCatalogUpdated();
 }
 

@@ -1,5 +1,5 @@
 import { requireSupabase } from "../lib/supabase.js";
-import { refreshProductCatalog } from "./productCatalog.js";
+import { syncProductCatalogAfterWrite } from "../utils/cacheSync.js";
 
 export async function listSales({ page = 1, pageSize = 20 } = {}) {
   const sb = requireSupabase();
@@ -37,7 +37,7 @@ export async function deleteSale(saleId) {
     wrapped.cause = error;
     throw wrapped;
   }
-  await refreshProductCatalog().catch(() => {});
+  await syncProductCatalogAfterWrite();
   return data;
 }
 
@@ -51,7 +51,7 @@ export async function deleteSalesBulk(saleIds) {
     wrapped.cause = error;
     throw wrapped;
   }
-  await refreshProductCatalog().catch(() => {});
+  await syncProductCatalogAfterWrite();
   return {
     deleted: data?.deleted ?? 0,
     failed: data?.failed ?? [],

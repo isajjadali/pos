@@ -74,9 +74,55 @@ export function compareBooleans(a, b) {
   return a ? -1 : 1;
 }
 
+export function compareDates(a, b) {
+  const ta = a ? new Date(a).getTime() : 0;
+  const tb = b ? new Date(b).getTime() : 0;
+  const na = Number.isFinite(ta) ? ta : 0;
+  const nb = Number.isFinite(tb) ? tb : 0;
+  return na - nb;
+}
+
+/** Table cells: DD/MM/YYYY hh:mm AM/PM */
+export function formatCreatedAt(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) return "—";
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  let h = d.getHours();
+  const min = String(d.getMinutes()).padStart(2, "0");
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12;
+  if (h === 0) h = 12;
+  const hh = String(h).padStart(2, "0");
+  return `${dd}/${mm}/${yyyy} ${hh}:${min} ${ampm}`;
+}
+
+/**
+ * Sortable "Created" column for list tables.
+ * @param {{ key?: string, title?: string, width?: number, remote?: boolean }} [opts]
+ *   remote: true when parent uses @update:sorter + server/query sort (no client sorter fn)
+ */
+export function createdAtColumn(opts = {}) {
+  const key = opts.key || "created_at";
+  const col = {
+    title: opts.title || "Created",
+    key,
+    width: opts.width ?? 158,
+    render: (row) => formatCreatedAt(row?.[key]),
+  };
+  if (opts.remote) {
+    col.sorter = true;
+  } else {
+    Object.assign(col, tableSorter("date", key));
+  }
+  return col;
+}
+
 /**
  * Naive UI column sorter.
- * @param {"string"|"number"|"boolean"} type
+ * @param {"string"|"number"|"boolean"|"date"} type
  * @param {string|((a,b)=>number)} keyOrCompare — field key or custom compare
  */
 export function tableSorter(type = "string", keyOrCompare) {
@@ -89,6 +135,9 @@ export function tableSorter(type = "string", keyOrCompare) {
   }
   if (type === "boolean") {
     return { sorter: (a, b) => compareBooleans(a[key], b[key]) };
+  }
+  if (type === "date") {
+    return { sorter: (a, b) => compareDates(a[key], b[key]) };
   }
   return { sorter: (a, b) => compareStrings(a[key], b[key]) };
 }

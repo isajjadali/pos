@@ -2,9 +2,9 @@ import { requireSupabase } from "../lib/supabase.js";
 import {
   findProductByCodeCached,
   isProductCatalogReady,
-  refreshProductCatalog,
   searchProductsCached,
 } from "./productCatalog.js";
+import { syncProductCatalogAfterWrite } from "../utils/cacheSync.js";
 
 export async function listOpenOrders() {
   const sb = requireSupabase();
@@ -213,8 +213,8 @@ export async function completeSale(orderId, { discount = 0, amountReceived = 0 }
   return data;
 }
 
-/** Single API call at checkout — cart lives in browser until then. */
-export async function completeSaleFromCart(lines, { discount = 0, amountReceived = 0 }) {
+/** Server RPC only — used by online checkout and offline outbox sync. */
+export async function completeSaleFromCartOnline(lines, { discount = 0, amountReceived = 0 }) {
   const sb = requireSupabase();
   const { data, error } = await sb.rpc("complete_sale_from_cart", {
     p_items: lines,
@@ -222,7 +222,13 @@ export async function completeSaleFromCart(lines, { discount = 0, amountReceived
     p_amount_received: Number(amountReceived) || 0,
   });
   if (error) throw error;
-  await refreshProductCatalog().catch(() => {});
+  return data;
+}
+
+/** Single API call at checkout — cart lives in browser until then. */
+export async function completeSaleFromCart(lines, { discount = 0, amountReceived = 0 }) {
+  const data = await completeSaleFromCartOnline(lines, { discount, amountReceived });
+  await syncProductCatalogAfterWrite();
   // Shopify inventory (fire-and-forget; never block checkout)
   try {
     const { shopifyNotifySaleLines } = await import("./shopify.js");

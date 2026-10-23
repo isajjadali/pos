@@ -10,8 +10,10 @@ import {
   NDataTable,
   NText,
   NAlert,
+  NIcon,
   useMessage,
 } from "naive-ui";
+import { ArrowDownOutline } from "@vicons/ionicons5";
 import { formatPkr, marginPercent } from "../utils/format.js";
 import { fitNameColumnWidth } from "../utils/tableColumns.js";
 import { updateProductsBulk } from "../services/products.js";
@@ -34,6 +36,24 @@ const categoryId = ref(null);
 const saving = ref(false);
 const reviewRows = ref([]);
 const draftRows = ref([]);
+/** Last edited cell — used as source for "copy to all rows". */
+const lastEdit = ref({ field: null, rowIndex: 0 });
+
+function markEdit(field, rowIndex) {
+  lastEdit.value = { field, rowIndex };
+}
+
+function copyFieldToAll(field) {
+  const rows = draftRows.value;
+  if (!rows.length) return;
+  let src = lastEdit.value.field === field ? lastEdit.value.rowIndex : 0;
+  if (src < 0 || src >= rows.length) src = 0;
+  const value = rows[src][field];
+  for (const row of rows) {
+    row[field] = value;
+  }
+  message.success(`Copied to all ${rows.length} row(s)`);
+}
 
 function productToDraft(p) {
   return {
@@ -51,7 +71,7 @@ function productToDraft(p) {
     box_selling_price: p.box_selling_price != null ? Number(p.box_selling_price) : null,
     default_sale_unit: p.default_sale_unit || "piece",
     sku: p.sku || null,
-    barcode: p.barcode || null,
+    barcode: p.barcode || "",
     vendor_id: p.vendor_id || null,
     category_id: p.category_id || null,
     low_stock_threshold: Math.max(0, Math.floor(Number(p.low_stock_threshold) || 5)),
@@ -89,7 +109,7 @@ function focusCell(rowIndex, colIndex) {
   });
 }
 
-const COL_COUNT = 6;
+const COL_COUNT = 7;
 
 function onEnter(rowIndex, colIndex) {
   if (colIndex < COL_COUNT - 1) {
@@ -153,6 +173,12 @@ const reviewColumns = computed(() => {
       key: "external_product_id",
       width: 100,
       render: (row) => row.external_product_id || "—",
+    },
+    {
+      title: "Barcode",
+      key: "barcode",
+      width: 120,
+      render: (row) => row.barcode || "—",
     },
     { title: "Name", key: "name", width: nameW, ellipsis: { tooltip: true } },
     { title: "Qty pcs", key: "current_stock", width: 70 },
@@ -266,12 +292,83 @@ function close() {
       </NSpace>
       <div class="bulk-edit-grid">
         <div class="bulk-edit-head">
-          <span>Product ID</span>
-          <span>Name</span>
-          <span>Qty pcs</span>
-          <span>Purchase</span>
-          <span>Pack pcs</span>
-          <span>Sale</span>
+          <span class="bulk-col-head">
+            Product ID
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows (uses last edited cell, else first row)"
+              @click="copyFieldToAll('external_product_id')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
+          <span class="bulk-col-head">
+            Barcode
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows"
+              @click="copyFieldToAll('barcode')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
+          <span class="bulk-col-head">
+            Name
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows"
+              @click="copyFieldToAll('name')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
+          <span class="bulk-col-head">
+            Qty pcs
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows"
+              @click="copyFieldToAll('current_stock')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
+          <span class="bulk-col-head">
+            Purchase
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows"
+              @click="copyFieldToAll('purchase_price')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
+          <span class="bulk-col-head">
+            Pack pcs
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows"
+              @click="copyFieldToAll('pieces_per_pack')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
+          <span class="bulk-col-head">
+            Sale
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows"
+              @click="copyFieldToAll('selling_price')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
           <span title="Gross margin (default unit)">Gross %</span>
           <span />
         </div>
@@ -280,18 +377,32 @@ function close() {
             <NInput
               v-model:value="row.external_product_id"
               size="small"
+              @focus="markEdit('external_product_id', rowIndex)"
+              @update:value="markEdit('external_product_id', rowIndex)"
               @keydown.enter.prevent="onEnter(rowIndex, 0)"
             />
           </div>
           <div :data-bulk-row="rowIndex" :data-bulk-col="1">
             <NInput
-              v-model:value="row.name"
-              placeholder="Product name"
+              v-model:value="row.barcode"
+              placeholder="Barcode"
               size="small"
+              @focus="markEdit('barcode', rowIndex)"
+              @update:value="markEdit('barcode', rowIndex)"
               @keydown.enter.prevent="onEnter(rowIndex, 1)"
             />
           </div>
           <div :data-bulk-row="rowIndex" :data-bulk-col="2">
+            <NInput
+              v-model:value="row.name"
+              placeholder="Product name"
+              size="small"
+              @focus="markEdit('name', rowIndex)"
+              @update:value="markEdit('name', rowIndex)"
+              @keydown.enter.prevent="onEnter(rowIndex, 2)"
+            />
+          </div>
+          <div :data-bulk-row="rowIndex" :data-bulk-col="3">
             <NInputNumber
               v-model:value="row.current_stock"
               :min="0"
@@ -299,20 +410,24 @@ function close() {
               :show-button="false"
               size="small"
               style="width: 100%"
-              @keydown.enter.prevent="onEnter(rowIndex, 2)"
+              @focus="markEdit('current_stock', rowIndex)"
+              @update:value="markEdit('current_stock', rowIndex)"
+              @keydown.enter.prevent="onEnter(rowIndex, 3)"
             />
           </div>
-          <div :data-bulk-row="rowIndex" :data-bulk-col="3">
+          <div :data-bulk-row="rowIndex" :data-bulk-col="4">
             <NInputNumber
               v-model:value="row.purchase_price"
               :min="0"
               :show-button="false"
               size="small"
               style="width: 100%"
-              @keydown.enter.prevent="onEnter(rowIndex, 3)"
+              @focus="markEdit('purchase_price', rowIndex)"
+              @update:value="markEdit('purchase_price', rowIndex)"
+              @keydown.enter.prevent="onEnter(rowIndex, 4)"
             />
           </div>
-          <div :data-bulk-row="rowIndex" :data-bulk-col="4">
+          <div :data-bulk-row="rowIndex" :data-bulk-col="5">
             <NInputNumber
               v-model:value="row.pieces_per_pack"
               :min="1"
@@ -320,17 +435,21 @@ function close() {
               :show-button="false"
               size="small"
               style="width: 100%"
-              @keydown.enter.prevent="onEnter(rowIndex, 4)"
+              @focus="markEdit('pieces_per_pack', rowIndex)"
+              @update:value="markEdit('pieces_per_pack', rowIndex)"
+              @keydown.enter.prevent="onEnter(rowIndex, 5)"
             />
           </div>
-          <div :data-bulk-row="rowIndex" :data-bulk-col="5">
+          <div :data-bulk-row="rowIndex" :data-bulk-col="6">
             <NInputNumber
               v-model:value="row.selling_price"
               :min="0"
               :show-button="false"
               size="small"
               style="width: 100%"
-              @keydown.enter.prevent="onEnter(rowIndex, 5)"
+              @focus="markEdit('selling_price', rowIndex)"
+              @update:value="markEdit('selling_price', rowIndex)"
+              @keydown.enter.prevent="onEnter(rowIndex, 6)"
             />
           </div>
           <span
@@ -390,7 +509,7 @@ function close() {
 .bulk-edit-head,
 .bulk-edit-row {
   display: grid;
-  grid-template-columns: 110px minmax(140px, 1fr) 88px 110px 88px 110px 72px 36px;
+  grid-template-columns: 100px 120px minmax(120px, 1fr) 80px 100px 80px 100px 72px 36px;
   gap: 8px;
   align-items: center;
 }
@@ -403,6 +522,30 @@ function close() {
   background: var(--n-color);
   padding-bottom: 4px;
   z-index: 1;
+}
+.bulk-col-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.bulk-copy-all {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: var(--n-text-color-3);
+  cursor: pointer;
+  border-radius: 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.bulk-copy-all:hover {
+  color: var(--n-primary-color);
+  background: var(--n-button-color-2, rgba(0, 0, 0, 0.04));
 }
 .bulk-margin {
   font-size: 12px;

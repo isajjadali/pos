@@ -4,7 +4,7 @@ import { receiveStock } from "./inventory.js";
 import { createVendor, listActiveVendorOptions } from "./vendors.js";
 import { createCategory, listCategories } from "./categories.js";
 import { toTitleCase } from "../utils/titleCase.js";
-import { refreshProductCatalog } from "./productCatalog.js";
+import { syncCachesAfterWrite } from "../utils/cacheSync.js";
 
 export async function findProductMatch(row) {
   const sb = requireSupabase();
@@ -132,12 +132,12 @@ export async function importProductsBulk(mappedRows, behavior, { onProgress } = 
   for (let offset = 0; offset < mappedRows.length; offset += BULK_CHUNK_SIZE) {
     const chunk = mappedRows.slice(offset, offset + BULK_CHUNK_SIZE);
     const payload = chunk.map((row) => ({
-      name: row.name ?? "",
+      name: toTitleCase(row.name),
       external_product_id: row.external_product_id ?? "",
       sku: row.sku ?? "",
       barcode: row.barcode ?? "",
-      vendor: row.vendor ?? "",
-      category: row.category ?? "",
+      vendor: toTitleCase(row.vendor),
+      category: toTitleCase(row.category),
       quantity: importJsonNumber(row.quantity),
       selling_price: importJsonNumber(row.selling_price),
       purchase_price: importJsonNumber(row.purchase_price),
@@ -167,7 +167,7 @@ export async function importProductsBulk(mappedRows, behavior, { onProgress } = 
     }
   }
 
-  await refreshProductCatalog().catch(() => {});
+  await syncCachesAfterWrite();
 
   return {
     results: allResults,

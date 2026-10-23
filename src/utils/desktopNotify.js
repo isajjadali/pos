@@ -1,7 +1,8 @@
 import { requireSupabase } from "../lib/supabase.js";
 import { invokeEdgeFunction } from "./edgeFunction.js";
 
-const SW_PATH = "/sw-orders.js";
+/** Fallback when vite-plugin-pwa has not registered yet (e.g. pure vite dev). */
+const FALLBACK_SW_PATH = "/sw-orders.js";
 
 export function notificationPermission() {
   if (typeof Notification === "undefined") return "unsupported";
@@ -10,9 +11,16 @@ export function notificationPermission() {
 
 export async function ensureOrderServiceWorker() {
   if (!("serviceWorker" in navigator)) return null;
-  const reg = await navigator.serviceWorker.register(SW_PATH, { scope: "/" });
+  let reg = await navigator.serviceWorker.getRegistration("/");
+  if (!reg) {
+    try {
+      reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    } catch {
+      reg = await navigator.serviceWorker.register(FALLBACK_SW_PATH, { scope: "/" });
+    }
+  }
   await navigator.serviceWorker.ready;
-  return reg;
+  return (await navigator.serviceWorker.getRegistration("/")) || reg;
 }
 
 /** Ask OS permission (must be from a user gesture). */

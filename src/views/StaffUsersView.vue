@@ -25,7 +25,7 @@ import {
   updateStaffPassword,
   deleteStaffUser,
 } from "../services/staff.js";
-import { rowNumberColumn, fitNameColumnWidth } from "../utils/tableColumns.js";
+import { rowNumberColumn, createdAtColumn, fitNameColumnWidth } from "../utils/tableColumns.js";
 import { toTitleCase } from "../utils/titleCase.js";
 
 const message = useMessage();
@@ -58,7 +58,7 @@ function emptyEditForm() {
 const editForm = ref(emptyEditForm());
 
 const nameColumnWidth = computed(() => fitNameColumnWidth(rows.value, "full_name"));
-const tableScrollX = computed(() => 52 + nameColumnWidth.value + 220 + 120 + 168 + 24);
+const tableScrollX = computed(() => 52 + nameColumnWidth.value + 220 + 120 + 158 + 168 + 24);
 
 const columns = computed(() => [
   rowNumberColumn(1, 100),
@@ -81,6 +81,7 @@ const columns = computed(() => [
         () => (row.role === "admin" ? "Admin" : "Sales")
       ),
   },
+  createdAtColumn(),
   {
     title: "",
     key: "actions",

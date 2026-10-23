@@ -31,7 +31,7 @@ function apply() {
 
 <template>
   <NCard size="small" class="ph-card" style="margin-bottom: 12px">
-    <NCollapse :default-expanded-names="['helper']">
+    <NCollapse :default-expanded-names="[]">
       <NCollapseItem title="Pricing helper" name="helper">
         <NText depth="3" style="display: block; margin-bottom: 10px; font-size: 12px">
           Monthly expense se break-even / target sales. Bands: Traffic / Core / Hero margins → Price

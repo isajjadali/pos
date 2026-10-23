@@ -13,6 +13,7 @@ import {
   NModal,
   NSpin,
   NText,
+  NAlert,
   useMessage,
   useDialog,
 } from "naive-ui";
@@ -34,13 +35,21 @@ import {
 } from "../services/productCatalog.js";
 import { useProductCacheStore } from "../stores/productCache.js";
 import { getSale } from "../services/sales.js";
-import { getSettings } from "../services/settings.js";
+import { getSettings, getCachedSettings } from "../services/settings.js";
 import { printReceipt } from "../utils/receiptPrint.js";
 import { shouldBlockShortcut } from "../utils/hotkeys.js";
 import { usePosCartStore } from "../stores/posCart.js";
 import { useLayoutStore } from "../stores/layout.js";
+import { useOfflineSalesStore } from "../stores/offlineSales.js";
 import { PRODUCT_CATALOG_UPDATED } from "../utils/catalogSync.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
+import { useOnlineStatus } from "../composables/useOnlineStatus.js";
+import { isLikelyNetworkError } from "../services/offlineSaleOutbox.js";
+import { drainAllOfflineQueues } from "../services/adminOutboxSync.js";
+import {
+  buildOfflineReceiptDetail,
+  stockDeltasFromCartLines,
+} from "../utils/offlineSaleReceipt.js";
 import { getActiveScheduledSaleDiscount } from "../services/scheduledDiscounts.js";
 import {
   formatScheduledPromoRule,
@@ -62,7 +71,10 @@ const route = useRoute();
 const cartStore = usePosCartStore();
 const layoutStore = useLayoutStore();
 const productCache = useProductCacheStore();
+const offlineSales = useOfflineSalesStore();
+const { online } = useOnlineStatus();
 const { items, subtotal, carts, activeCartId, focusQtyLineId } = storeToRefs(cartStore);
+const { pendingCount, failedCount, pendingEntries, syncing: offlineSyncing } = storeToRefs(offlineSales);
 
 const cartFilter = ref("");
 useRouteQuerySync({
@@ -408,7 +420,9 @@ function firstSelectableSearchIndex(list) {
 async function refreshPosCatalog() {
   if (!supabaseConfigured) return;
   try {
-    await refreshProductCatalog();
+    const { clearForcedOffline } = await import("../services/offlineGuard.js");
+    clearForcedOffline();
+    await refreshProductCatalog({ force: true });
     cartStore.syncLineStockFromCatalog((id) => productCache.products.find((p) => p.id === id));
     if (lookupTerm.value.length > 0) scheduleLiveLookup();
   } catch {
@@ -685,6 +699,46 @@ async function onLookupEnter(e) {
   await onScanEnter();
 }
 
+function finishWithLocalReceipt(detail, settings) {
+  receiptDetail.value = detail;
+  if (settings) receiptSettings.value = settings;
+  receiptOpen.value = true;
+  cashReceived.value = 0;
+  cartStore.afterCompletedSale();
+}
+
+function enqueueOfflineSaleFromCart() {
+  const clientSaleId = crypto.randomUUID();
+  const cartSnapshot = items.value.map((l) => ({ ...l, products: { ...l.products } }));
+  const lines = cartStore.linesForCheckout();
+  const detail = buildOfflineReceiptDetail(cartSnapshot, {
+    discount: discount.value,
+    amountReceived: cashReceived.value,
+    clientSaleId,
+  });
+  offlineSales.enqueue({
+    clientSaleId,
+    createdAt: new Date().toISOString(),
+    lines,
+    discount: Number(discount.value) || 0,
+    amountReceived: Number(cashReceived.value) || 0,
+    totals: {
+      subtotal: detail.sale.subtotal,
+      total: detail.sale.total_amount,
+    },
+    receiptItems: detail.items,
+    receiptSale: detail.sale,
+    status: "pending",
+    lastError: null,
+  });
+  for (const { productId, deltaQty } of stockDeltasFromCartLines(cartSnapshot)) {
+    productCache.applyStockDelta(productId, deltaQty);
+  }
+  const settings = getCachedSettings() || receiptSettings.value || {};
+  finishWithLocalReceipt(detail, settings);
+  message.success("Sale saved offline — will sync when online");
+}
+
 async function complete() {
   if (!items.value.length) return message.warning("Cart is empty");
   for (const line of items.value) {
@@ -708,23 +762,69 @@ async function complete() {
   }
   completing.value = true;
   try {
-    const saleId = await completeSaleFromCart(cartStore.linesForCheckout(), {
-      discount: discount.value,
-      amountReceived: cashReceived.value,
+    if (!online.value) {
+      enqueueOfflineSaleFromCart();
+      return;
+    }
+    const lines = cartStore.linesForCheckout();
+    const cartSnapshot = items.value.map((l) => ({ ...l, products: { ...l.products } }));
+    const disc = discount.value;
+    const receivedAmt = cashReceived.value;
+    const saleId = await completeSaleFromCart(lines, {
+      discount: disc,
+      amountReceived: receivedAmt,
     });
     message.success("Sale completed");
-    receiptDetail.value = await getSale(saleId);
-    const s = await getSettings();
-    if (s) receiptSettings.value = s;
-    receiptOpen.value = true;
-    cashReceived.value = 0;
-    cartStore.afterCompletedSale();
+    let detail = null;
+    try {
+      detail = await getSale(saleId);
+    } catch {
+      /* sale already committed — fall back to local receipt shape */
+      detail = buildOfflineReceiptDetail(cartSnapshot, {
+        discount: disc,
+        amountReceived: receivedAmt,
+        clientSaleId: typeof saleId === "string" ? saleId : crypto.randomUUID(),
+      });
+      if (detail.sale) detail.sale.offline_pending = false;
+    }
+    const s = await getSettings().catch(() => getCachedSettings());
+    finishWithLocalReceipt(detail, s || receiptSettings.value);
     await refreshPosCatalog();
   } catch (e) {
+    if (isLikelyNetworkError(e)) {
+      enqueueOfflineSaleFromCart();
+      return;
+    }
     message.error(e.message);
   } finally {
     completing.value = false;
   }
+}
+
+async function retryOfflineSync() {
+  const result = await drainAllOfflineQueues();
+  if (result?.synced) message.success(`Synced ${result.synced} change(s)`);
+  else if (result?.failed) message.warning(`${result.failed} change(s) failed`);
+  else if (!online.value) message.warning("Still offline");
+  else message.info("Nothing to sync");
+}
+
+function discardFailedOfflineSale(clientSaleId) {
+  dialog.warning({
+    title: "Discard offline sale?",
+    content: "This sale will not be sent to the server. Local stock was already reduced.",
+    positiveText: "Discard",
+    negativeText: "Cancel",
+    onPositiveClick: () => {
+      offlineSales.discard(clientSaleId);
+      message.success("Discarded");
+    },
+  });
+}
+
+function retryFailedOfflineSale(clientSaleId) {
+  offlineSales.markPending(clientSaleId);
+  retryOfflineSync();
 }
 
 function switchSaleTab(delta) {
@@ -883,8 +983,18 @@ onMounted(() => {
   window.addEventListener("keydown", onPosKeyDown, true);
   window.addEventListener(PRODUCT_CATALOG_UPDATED, onGlobalCatalogUpdated);
   cartStore.init();
+  offlineSales.hydrate();
   refreshPosCatalog();
   refreshScheduledPromoForPos();
+  getSettings()
+    .then((s) => {
+      if (s) receiptSettings.value = s;
+    })
+    .catch(() => {
+      const cached = getCachedSettings();
+      if (cached) receiptSettings.value = cached;
+    });
+  if (online.value && pendingCount.value) drainAllOfflineQueues();
   focusRef(scanRef);
 });
 
@@ -905,6 +1015,38 @@ onUnmounted(() => {
       <kbd>Shift+F12</kbd> / <kbd>Shift+F11</kbd> next / prev sale tab · Enter on qty → scan
     </p>
     <SupabaseRequiredAlert />
+    <NAlert v-if="!online" type="warning" style="margin-bottom: 12px" :bordered="false">
+      Offline — scan and sell from the cached catalog. Sales queue and sync when you are back online.
+    </NAlert>
+    <NAlert
+      v-else-if="pendingCount"
+      :type="failedCount ? 'error' : 'info'"
+      style="margin-bottom: 12px"
+      :bordered="false"
+    >
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px">
+        <span>
+          Pending sync: {{ pendingCount }}
+          <template v-if="failedCount"> ({{ failedCount }} failed)</template>
+        </span>
+        <NButton size="tiny" type="primary" :loading="offlineSyncing" @click="retryOfflineSync">
+          Sync now
+        </NButton>
+      </div>
+      <div v-if="failedCount" class="pos-offline-failed" style="margin-top: 8px">
+        <div
+          v-for="e in pendingEntries.filter((x) => x.status === 'failed')"
+          :key="e.clientSaleId"
+          style="font-size: 12px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center"
+        >
+          <span>{{ e.receiptSale?.sale_reference || e.clientSaleId.slice(0, 8) }} — {{ e.lastError }}</span>
+          <NButton size="tiny" secondary @click="retryFailedOfflineSale(e.clientSaleId)">Retry</NButton>
+          <NButton size="tiny" quaternary type="error" @click="discardFailedOfflineSale(e.clientSaleId)">
+            Discard
+          </NButton>
+        </div>
+      </div>
+    </NAlert>
     <NCard size="small" class="pos-card">
       <div class="pos-tabs-row">
         <div

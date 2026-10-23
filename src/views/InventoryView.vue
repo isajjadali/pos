@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import {
   NButton,
   NSpace,
@@ -13,12 +13,13 @@ import {
   useMessage,
 } from "naive-ui";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
+import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { listStockMovements, receiveStock, adjustStock, listLowStockProducts } from "../services/inventory.js";
 import { listProducts } from "../services/products.js";
 import { listActiveVendorOptions } from "../services/vendors.js";
-import { refreshProductCatalog } from "../services/productCatalog.js";
-import { rowNumberColumn } from "../utils/tableColumns.js";
+import { PRODUCT_CATALOG_UPDATED } from "../services/productCatalog.js";
+import { rowNumberColumn, createdAtColumn } from "../utils/tableColumns.js";
 
 const message = useMessage();
 const movements = ref([]);
@@ -34,7 +35,7 @@ const adjustForm = ref({ productId: null, quantityChange: -1, movementType: "dam
 
 const columns = [
   rowNumberColumn(1, 50),
-  { title: "When", key: "created_at", width: 160, render: (r) => new Date(r.created_at).toLocaleString() },
+  createdAtColumn({ width: 168 }),
   { title: "Product", key: "products", render: (r) => r.products?.name || "—" },
   { title: "Type", key: "movement_type" },
   { title: "Change", key: "quantity_change" },
@@ -69,7 +70,6 @@ async function submitReceive() {
     await receiveStock(receiveForm.value);
     message.success("Stock received");
     showReceive.value = false;
-    await refreshProductCatalog().catch(() => {});
     await load();
   } catch (e) {
     message.error(e.message);
@@ -81,20 +81,24 @@ async function submitAdjust() {
     await adjustStock(adjustForm.value);
     message.success("Stock adjusted");
     showAdjust.value = false;
-    await refreshProductCatalog().catch(() => {});
     await load();
   } catch (e) {
     message.error(e.message);
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  window.addEventListener(PRODUCT_CATALOG_UPDATED, load);
+  load();
+});
+onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
 </script>
 
 <template>
   <div>
     <h1 style="margin-top: 0">Inventory</h1>
     <SupabaseRequiredAlert />
+    <OfflinePendingBanner />
     <NSpace class="app-filter-stack" style="margin-bottom: 16px" wrap>
       <NButton type="primary" :disabled="!supabaseConfigured" @click="showReceive = true">Receive stock</NButton>
       <NButton :disabled="!supabaseConfigured" @click="showAdjust = true">Adjustment / damage</NButton>

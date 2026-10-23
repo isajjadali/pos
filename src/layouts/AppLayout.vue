@@ -20,7 +20,11 @@ import {
 import { NIcon } from "naive-ui";
 import { useAuthStore } from "../stores/auth.js";
 import { supabaseConfigured } from "../lib/supabase.js";
-import { visibleNavItems } from "../config/navigation.js";
+import {
+  visibleNavItems,
+  findNavLeaf,
+  expandedNavKeysForRoute,
+} from "../config/navigation.js";
 import { getSettings } from "../services/settings.js";
 import AppHotkeys from "../components/AppHotkeys.vue";
 import GlobalBarcodeScanner from "../components/GlobalBarcodeScanner.vue";
@@ -60,12 +64,32 @@ onMounted(async () => {
 
 const icon = (component) => () => h(NIcon, null, { default: () => h(component) });
 
-const menuOptions = computed(() =>
-  visibleNavItems(auth.isAdmin).map((item) => ({
+function toMenuOption(item) {
+  const opt = {
     label: item.label,
     key: item.key,
     icon: icon(item.icon),
-  }))
+  };
+  if (item.children?.length) {
+    opt.children = item.children.map(toMenuOption);
+  }
+  return opt;
+}
+
+const menuOptions = computed(() => visibleNavItems(auth.isAdmin).map(toMenuOption));
+
+const menuExpandedKeys = ref([]);
+
+watch(
+  () => [auth.isAdmin, route.name],
+  () => {
+    const needed = expandedNavKeysForRoute(auth.isAdmin, route.name);
+    if (!needed.length) return;
+    const set = new Set(menuExpandedKeys.value);
+    for (const k of needed) set.add(k);
+    menuExpandedKeys.value = [...set];
+  },
+  { immediate: true }
 );
 
 const roleLabel = computed(() => (auth.isAdmin ? "Administrator" : "Sales"));
@@ -74,7 +98,13 @@ const salesOnlyShell = computed(() => supabaseConfigured && auth.isSales);
 const activeKey = computed(() => route.name);
 
 function onMenuSelect(key) {
+  // Parent group keys are not routes — ignore
+  if (String(key).startsWith("nav-")) return;
   router.push({ name: key });
+}
+
+function onMenuExpandedKeys(keys) {
+  menuExpandedKeys.value = keys;
 }
 
 async function logout() {
@@ -136,7 +166,7 @@ const menuCollapsed = computed(() => {
 });
 
 const mobilePageTitle = computed(() => {
-  const item = visibleNavItems(auth.isAdmin).find((i) => i.key === route.name);
+  const item = findNavLeaf(auth.isAdmin, route.name);
   return item?.label ?? "Discount World";
 });
 </script>
@@ -177,7 +207,9 @@ const mobilePageTitle = computed(() => {
             :collapsed-icon-size="22"
             :value="activeKey"
             :options="menuOptions"
+            :expanded-keys="menuExpandedKeys"
             @update:value="onMenuSelect"
+            @update:expanded-keys="onMenuExpandedKeys"
           />
         </div>
         <div class="sider-footer" :class="{ 'sider-footer--collapsed': menuCollapsed }">

@@ -9,7 +9,7 @@ import { formatPkr } from "../utils/format.js";
 import { getSettings } from "../services/settings.js";
 import { printReceipt } from "../utils/receiptPrint.js";
 import { usePermissions } from "../composables/usePermissions.js";
-import { rowNumberColumn, paginationTotalPrefix } from "../utils/tableColumns.js";
+import { rowNumberColumn, createdAtColumn, paginationTotalPrefix } from "../utils/tableColumns.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
 
 const message = useMessage();
@@ -41,11 +41,7 @@ const columns = computed(() => {
   if (canDeleteSales.value) cols.push({ type: "selection" });
   cols.push(
     { title: "Reference", key: "sale_reference" },
-    {
-      title: "Date",
-      key: "completed_at",
-      render: (r) => new Date(r.completed_at).toLocaleString(),
-    },
+    createdAtColumn({ key: "completed_at", title: "Created", width: 168 }),
     { title: "Total", key: "total_amount", render: (r) => formatPkr(r.total_amount) },
     { title: "Payment", key: "payment_method" },
     {

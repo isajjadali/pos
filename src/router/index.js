@@ -5,46 +5,54 @@ import { supabaseConfigured } from "../lib/supabase.js";
 import { navRouteKeysForUser } from "../config/navigation.js";
 import { FEATURE_SHOPIFY } from "../config/features.js";
 
+/*
+ * Eager imports (not () => import(...)): offline / DevTools Offline must not
+ * fetch new chunks from the Vite server when switching pages.
+ */
+import LoginView from "../views/LoginView.vue";
+import AppLayout from "../layouts/AppLayout.vue";
+import DashboardView from "../views/DashboardView.vue";
+import InsightsView from "../views/InsightsView.vue";
+import PosView from "../views/PosView.vue";
+import ProductsView from "../views/ProductsView.vue";
+import CategoriesView from "../views/CategoriesView.vue";
+import PriceGroupsView from "../views/PriceGroupsView.vue";
+import ShopifyOrdersView from "../views/ShopifyOrdersView.vue";
+import ImportProductsView from "../views/ImportProductsView.vue";
+import InventoryView from "../views/InventoryView.vue";
+import BarcodePrintingView from "../views/BarcodePrintingView.vue";
+import VendorsView from "../views/VendorsView.vue";
+import SalesHistoryView from "../views/SalesHistoryView.vue";
+import StaffUsersView from "../views/StaffUsersView.vue";
+import SettingsView from "../views/SettingsView.vue";
+
 const routes = [
   {
     path: "/login",
     name: "login",
-    component: () => import("../views/LoginView.vue"),
+    component: LoginView,
     meta: { public: true },
   },
   {
     path: "/",
-    component: () => import("../layouts/AppLayout.vue"),
+    component: AppLayout,
     children: [
-      { path: "", name: "dashboard", component: () => import("../views/DashboardView.vue") },
-      { path: "pos", name: "pos", component: () => import("../views/PosView.vue") },
-      { path: "products", name: "products", component: () => import("../views/ProductsView.vue") },
-      {
-        path: "categories",
-        name: "categories",
-        component: () => import("../views/CategoriesView.vue"),
-      },
-      {
-        path: "price-groups",
-        name: "price-groups",
-        component: () => import("../views/PriceGroupsView.vue"),
-      },
+      { path: "", name: "dashboard", component: DashboardView },
+      { path: "insights", name: "insights", component: InsightsView },
+      { path: "pos", name: "pos", component: PosView },
+      { path: "products", name: "products", component: ProductsView },
+      { path: "categories", name: "categories", component: CategoriesView },
+      { path: "price-groups", name: "price-groups", component: PriceGroupsView },
       ...(FEATURE_SHOPIFY
-        ? [
-            {
-              path: "shopify-orders",
-              name: "shopify-orders",
-              component: () => import("../views/ShopifyOrdersView.vue"),
-            },
-          ]
+        ? [{ path: "shopify-orders", name: "shopify-orders", component: ShopifyOrdersView }]
         : []),
-      { path: "import", name: "import", component: () => import("../views/ImportProductsView.vue") },
-      { path: "inventory", name: "inventory", component: () => import("../views/InventoryView.vue") },
-      { path: "barcodes", name: "barcodes", component: () => import("../views/BarcodePrintingView.vue") },
-      { path: "vendors", name: "vendors", component: () => import("../views/VendorsView.vue") },
-      { path: "sales", name: "sales", component: () => import("../views/SalesHistoryView.vue") },
-      { path: "staff", name: "staff", component: () => import("../views/StaffUsersView.vue") },
-      { path: "settings", name: "settings", component: () => import("../views/SettingsView.vue") },
+      { path: "import", name: "import", component: ImportProductsView },
+      { path: "inventory", name: "inventory", component: InventoryView },
+      { path: "barcodes", name: "barcodes", component: BarcodePrintingView },
+      { path: "vendors", name: "vendors", component: VendorsView },
+      { path: "sales", name: "sales", component: SalesHistoryView },
+      { path: "staff", name: "staff", component: StaffUsersView },
+      { path: "settings", name: "settings", component: SettingsView },
     ],
   },
 ];

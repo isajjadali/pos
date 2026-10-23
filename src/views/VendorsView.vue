@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch, h, computed } from "vue";
+import { ref, onMounted, onUnmounted, watch, h, computed } from "vue";
 import {
   NButton,
   NSpace,
@@ -12,11 +12,18 @@ import {
   NTag,
   NSelect,
   NAlert,
+  NDrawer,
+  NDrawerContent,
+  NDropdown,
+  NButtonGroup,
+  NIcon,
   useMessage,
   useDialog,
 } from "naive-ui";
+import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
+import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import {
   createVendor,
@@ -27,10 +34,12 @@ import {
 import {
   rowNumberColumn,
   tableSorter,
+  createdAtColumn,
   fitNameColumnWidth,
   paginationTotalPrefix,
 } from "../utils/tableColumns.js";
 import { toTitleCase } from "../utils/titleCase.js";
+import { PRODUCT_CATALOG_UPDATED } from "../services/productCatalog.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
 
 const message = useMessage();
@@ -53,6 +62,9 @@ const hasActiveFilters = computed(
     sortKey.value ||
     sortOrder.value
 );
+/** Secondary filters only (inside More filters) — drives badge count. */
+const moreFiltersCount = computed(() => (activeOnly.value ? 1 : 0));
+const showMoreFilters = ref(false);
 function clearFilters() {
   search.value = "";
   productFilter.value = "all";
@@ -61,6 +73,24 @@ function clearFilters() {
   sortOrder.value = null;
   page.value = 1;
   checkedRowKeys.value = [];
+}
+
+/** More actions for the split-button dropdown (Add stays on the primary). */
+const vendorActionOptions = computed(() => {
+  const n = checkedRowKeys.value.length;
+  const ready = Boolean(supabaseConfigured);
+  return [
+    {
+      label: n ? `Delete selected (${n})` : "Delete selected",
+      key: "delete",
+      disabled: !ready || !n,
+      props: { style: "color: #dc2626" },
+    },
+  ];
+});
+
+function onVendorActionSelect(key) {
+  if (key === "delete") confirmDeleteSelected();
 }
 const summary = ref({ vendorTotal: 0, withProducts: 0, withoutProducts: 0 });
 
@@ -103,7 +133,7 @@ function emptyForm() {
 
 const nameColumnWidth = computed(() => fitNameColumnWidth(rows.value));
 const tableScrollX = computed(
-  () => 52 + 40 + nameColumnWidth.value + 120 + 140 + 120 + 90 + 160 + 24
+  () => 52 + 40 + nameColumnWidth.value + 120 + 140 + 120 + 90 + 158 + 160 + 24
 );
 
 const columns = computed(() => [
@@ -155,6 +185,7 @@ const columns = computed(() => [
         row.is_active ? "Active" : "Inactive"
       ),
   },
+  createdAtColumn({ remote: true }),
   {
     title: "Actions",
     key: "actions",
@@ -332,13 +363,18 @@ watch([page, pageSize, sortKey, sortOrder], () => {
 
 loadFromQuery = load;
 
-onMounted(load);
+onMounted(() => {
+  window.addEventListener(PRODUCT_CATALOG_UPDATED, load);
+  load();
+});
+onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
 </script>
 
 <template>
   <div class="app-page app-page--fill">
     <h1 style="margin-top: 0">Vendors</h1>
     <SupabaseRequiredAlert />
+    <OfflinePendingBanner />
     <NAlert
       v-if="supabaseConfigured && summary.withoutProducts > 0"
       type="info"
@@ -347,28 +383,51 @@ onMounted(load);
       {{ summary.withoutProducts }} vendor(s) have no products — use filter
       <strong>No products (safe to delete)</strong> to clean up unused vendors.
     </NAlert>
-    <NSpace class="app-filter-stack" style="margin-bottom: 16px" wrap>
-      <NInput v-model:value="search" placeholder="Search vendor name" clearable style="width: 260px" />
-      <NSelect
-        v-model:value="productFilter"
-        :options="productFilterOptions"
-        style="width: 240px"
-      />
-      <NSwitch v-model:value="activeOnly">
-        <template #checked>Active only</template>
-        <template #unchecked>All vendors</template>
-      </NSwitch>
-      <ClearFiltersButton :disabled="!hasActiveFilters" @clear="clearFilters" />
-      <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">Add vendor</NButton>
-      <NButton
-        type="error"
-        :disabled="!supabaseConfigured || !checkedRowKeys.length"
-        @click="confirmDeleteSelected"
-      >
-        Delete selected{{ checkedRowKeys.length ? ` (${checkedRowKeys.length})` : "" }}
-      </NButton>
-      <NButton :disabled="!supabaseConfigured" @click="load">Refresh</NButton>
-    </NSpace>
+    <div class="app-toolbar">
+      <NSpace class="app-filter-stack" align="center" wrap>
+        <NInput v-model:value="search" placeholder="Search vendor name" clearable style="width: 260px" />
+        <NSelect
+          v-model:value="productFilter"
+          :options="productFilterOptions"
+          style="width: 240px"
+        />
+        <NButton :type="moreFiltersCount ? 'warning' : 'default'" @click="showMoreFilters = true">
+          More filters{{ moreFiltersCount ? ` (${moreFiltersCount})` : "" }}
+        </NButton>
+        <NButtonGroup>
+          <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
+            Add vendor
+          </NButton>
+          <NDropdown
+            trigger="click"
+            :options="vendorActionOptions"
+            @select="onVendorActionSelect"
+          >
+            <NButton
+              type="primary"
+              :disabled="!supabaseConfigured"
+              aria-label="More vendor actions"
+              style="padding: 0 10px"
+            >
+              <NIcon :component="ChevronDownOutline" :size="16" />
+            </NButton>
+          </NDropdown>
+        </NButtonGroup>
+        <NButton :disabled="!supabaseConfigured" @click="load">Refresh</NButton>
+        <ClearFiltersButton v-if="hasActiveFilters" :disabled="false" @clear="clearFilters" />
+      </NSpace>
+    </div>
+
+    <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
+      <NDrawerContent title="More filters" closable :native-scrollbar="false">
+        <div class="vendors-more-filters">
+          <NSwitch v-model:value="activeOnly">
+            <template #checked>Active only</template>
+            <template #unchecked>All vendors</template>
+          </NSwitch>
+        </div>
+      </NDrawerContent>
+    </NDrawer>
     <div class="app-table-panel">
       <NDataTable
         v-model:checked-row-keys="checkedRowKeys"
@@ -429,6 +488,12 @@ onMounted(load);
 </template>
 
 <style scoped>
+.vendors-more-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 16px;
+}
 .vendor-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

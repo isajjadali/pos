@@ -1,9 +1,21 @@
 import { watch, nextTick, ref, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+function asList(value) {
+  if (value == null || value === "") return [];
+  if (Array.isArray(value)) return value.map(String);
+  return [String(value)];
+}
+
 function queryValueEqual(a, b) {
   if (a === b) return true;
   if (a == null && b == null) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    const aa = asList(a);
+    const bb = asList(b);
+    if (aa.length !== bb.length) return false;
+    return aa.every((v, i) => v === bb[i]);
+  }
   return String(a) === String(b);
 }
 
@@ -147,6 +159,22 @@ export const routeQuery = {
       default: null,
       parse: (s) => s || null,
       serialize: (v) => (v ? String(v) : undefined),
+    };
+  },
+  /** Comma-separated multi values (vendor/category/tag filters). */
+  stringList(ref) {
+    return {
+      ref,
+      default: [],
+      parse: (s) =>
+        String(s || "")
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean),
+      serialize: (v) => {
+        const list = Array.isArray(v) ? v.filter(Boolean) : v ? [v] : [];
+        return list.length ? list.map(String).join(",") : undefined;
+      },
     };
   },
   positiveInt(ref, defaultValue) {

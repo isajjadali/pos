@@ -1,15 +1,23 @@
 import { requireSupabase } from "../lib/supabase.js";
-import { refreshProductCatalog } from "./productCatalog.js";
 import { toTitleCase, vendorInitialsPrefix } from "../utils/titleCase.js";
 import { isProductTagsDbReady, setProductTags, TAGS_MIGRATION_HINT } from "./productTags.js";
 import { normalizeProductUnitFields } from "../utils/saleUnits.js";
+import { onlineOrOfflineWrite, onlineOrOfflineRead } from "./offlineGuard.js";
+import { listProductsLocal } from "./listProductsLocal.js";
+import {
+  offlineCreateProduct,
+  offlineUpdateProduct,
+  offlineDeactivateProduct,
+  offlineDeleteProductsBulk,
+  offlineDeactivateProductsBulk,
+  offlineReactivateProductsBulk,
+} from "./adminOfflineApply.js";
+import { useProductCacheStore } from "../stores/productCache.js";
+import { useMetaCacheStore } from "../stores/metaCache.js";
+import { syncProductCatalogAfterWrite } from "../utils/cacheSync.js";
 
 async function syncCatalog() {
-  try {
-    await refreshProductCatalog();
-  } catch {
-    /* catalog will refresh on next login */
-  }
+  await syncProductCatalogAfterWrite();
 }
 
 const PRODUCT_SORT_COLUMNS = new Set([
@@ -20,16 +28,45 @@ const PRODUCT_SORT_COLUMNS = new Set([
   "weighted_avg_cost",
   "selling_price",
   "is_active",
+  "created_at",
   "updated_at",
 ]);
 
-export async function listProducts({
+export async function listProducts(opts = {}) {
+  return onlineOrOfflineRead(
+    () => listProductsOnline(opts),
+    () => listProductsLocal(opts)
+  );
+}
+
+function normalizeFilterIds(ids, single) {
+  const fromArr = Array.isArray(ids) ? ids : [];
+  const fromSingle = single != null && single !== "" ? [single] : [];
+  return [...new Set([...fromArr, ...fromSingle].filter(Boolean).map(String))];
+}
+
+function normalizeFilterTags(tags, tag) {
+  const fromArr = Array.isArray(tags) ? tags : [];
+  const fromSingle = tag != null && tag !== "" ? [tag] : [];
+  return [
+    ...new Set(
+      [...fromArr, ...fromSingle]
+        .map((t) => String(t ?? "").trim().toLowerCase())
+        .filter(Boolean)
+    ),
+  ];
+}
+
+async function listProductsOnline({
   search = "",
   vendorId = null,
+  vendorIds = null,
   categoryId = null,
+  categoryIds = null,
   lowStockOnly = false,
   activeOnly = false,
   tag = null,
+  tags = null,
   unitFilter = "all",
   page = 1,
   pageSize = 20,
@@ -40,6 +77,9 @@ export async function listProducts({
   const from = (page - 1) * pageSize;
   const to = from + pageSize - 1;
   const ascending = sortOrder === "ascend";
+  const vendorList = normalizeFilterIds(vendorIds, vendorId);
+  const categoryList = normalizeFilterIds(categoryIds, categoryId);
+  const tagList = normalizeFilterTags(tags, tag);
 
   let query = sb.from("products").select("*, vendors(name), categories(name)", { count: "exact" });
 
@@ -62,8 +102,10 @@ export async function listProducts({
       `name.ilike.%${term}%,sku.ilike.%${term}%,barcode.ilike.%${term}%,external_product_id.ilike.%${term}%`
     );
   }
-  if (vendorId) query = query.eq("vendor_id", vendorId);
-  if (categoryId) query = query.eq("category_id", categoryId);
+  if (vendorList.length === 1) query = query.eq("vendor_id", vendorList[0]);
+  else if (vendorList.length > 1) query = query.in("vendor_id", vendorList);
+  if (categoryList.length === 1) query = query.eq("category_id", categoryList[0]);
+  else if (categoryList.length > 1) query = query.in("category_id", categoryList);
   if (activeOnly) query = query.eq("is_active", true);
   if (lowStockOnly) query = query.eq("is_low_stock", true);
   const uf = String(unitFilter || "all");
@@ -71,12 +113,13 @@ export async function listProducts({
   else if (uf === "box") query = query.not("pieces_per_box", "is", null);
   else if (uf === "piece") query = query.eq("pieces_per_pack", 1).is("pieces_per_box", null);
   else if (uf === "multi") query = query.or("pieces_per_pack.gt.1,pieces_per_box.not.is.null");
-  const tagNorm = String(tag ?? "").trim().toLowerCase();
-  if (tagNorm) {
+  if (tagList.length) {
     if (!(await isProductTagsDbReady())) {
       throw new Error(TAGS_MIGRATION_HINT);
     }
-    query = query.contains("tags", [tagNorm]);
+    // Any selected tag (OR) — overlaps, not contains-all
+    if (tagList.length === 1) query = query.contains("tags", [tagList[0]]);
+    else query = query.overlaps("tags", tagList);
   }
 
   const { data, error, count } = await query;
@@ -86,11 +129,16 @@ export async function listProducts({
 
 /** Next unique shop code for a vendor prefix, e.g. AR-12 */
 export async function nextExternalProductId(prefixOrVendorName) {
-  const sb = requireSupabase();
-  const prefix = vendorInitialsPrefix(prefixOrVendorName);
-  const { data, error } = await sb.rpc("next_external_product_id", { p_prefix: prefix });
-  if (error) throw error;
-  return data;
+  return onlineOrOfflineRead(
+    async () => {
+      const sb = requireSupabase();
+      const prefix = vendorInitialsPrefix(prefixOrVendorName);
+      const { data, error } = await sb.rpc("next_external_product_id", { p_prefix: prefix });
+      if (error) throw error;
+      return data;
+    },
+    () => useProductCacheStore().nextLocalExternalId(prefixOrVendorName)
+  );
 }
 
 /** Bump shop code suffix, e.g. HT-12 → HT-13 */
@@ -143,38 +191,48 @@ export async function createProductsBulk(rows, { vendorId, vendorName, categoryI
     try {
       const pack = Math.max(1, Math.floor(Number(row.pieces_per_pack) || 1));
       const sale = Number(row.selling_price) || 0;
-      const id = await createProduct({
-        name: row.name,
-        external_product_id: row.id_source === "custom" ? row.resolved_external_product_id : "",
-        vendor_id: vendorId,
-        vendor_name: vendorName,
-        category_id: categoryId || null,
-        selling_price: sale,
-        purchase_price: row.purchase_price,
-        initial_qty: row.initial_qty,
-        pieces_per_pack: pack,
-        pieces_per_box: row.pieces_per_box,
-        piece_selling_price: row.piece_selling_price ?? sale,
-        pack_selling_price: row.pack_selling_price ?? sale,
-        box_selling_price: row.box_selling_price,
-        default_sale_unit: row.default_sale_unit || (pack > 1 ? "pack" : "piece"),
-      });
+      const id = await createProduct(
+        {
+          name: row.name,
+          external_product_id: row.id_source === "custom" ? row.resolved_external_product_id : "",
+          vendor_id: vendorId,
+          vendor_name: vendorName,
+          category_id: categoryId || null,
+          selling_price: sale,
+          purchase_price: row.purchase_price,
+          initial_qty: row.initial_qty,
+          pieces_per_pack: pack,
+          pieces_per_box: row.pieces_per_box,
+          piece_selling_price: row.piece_selling_price ?? sale,
+          pack_selling_price: row.pack_selling_price ?? sale,
+          box_selling_price: row.box_selling_price,
+          default_sale_unit: row.default_sale_unit || (pack > 1 ? "pack" : "piece"),
+        },
+        { sync: false }
+      );
       created.push({ index: i, productId: id, name: row.name });
     } catch (e) {
       errors.push({ index: i, name: row.name, message: e.message || "Create failed" });
     }
   }
+  if (created.length) await syncCatalog();
   return { created, errors };
 }
 
-export async function createProduct(payload) {
+async function createProductOnline(payload) {
   const sb = requireSupabase();
   let externalId = String(payload.external_product_id ?? "").trim() || null;
   if (!externalId && payload.vendor_name) {
     externalId = await nextExternalProductId(payload.vendor_name);
   } else if (!externalId && payload.vendor_id) {
-    const { data: v } = await sb.from("vendors").select("name").eq("id", payload.vendor_id).maybeSingle();
-    if (v?.name) externalId = await nextExternalProductId(v.name);
+    const meta = useMetaCacheStore();
+    const cachedName = meta.vendors.find((v) => v.id === payload.vendor_id)?.name;
+    if (cachedName) {
+      externalId = await nextExternalProductId(cachedName);
+    } else {
+      const { data: v } = await sb.from("vendors").select("name").eq("id", payload.vendor_id).maybeSingle();
+      if (v?.name) externalId = await nextExternalProductId(v.name);
+    }
   }
   const units = normalizeProductUnitFields(payload);
   const { data, error } = await sb.rpc("create_product_with_initial_stock", {
@@ -200,11 +258,21 @@ export async function createProduct(payload) {
   if (payload.tags) {
     await setProductTags(productId, payload.tags);
   }
-  await syncCatalog();
   return productId;
 }
 
-export async function updateProduct(id, payload) {
+export async function createProduct(payload, { sync = true, forceOnline = false } = {}) {
+  const productId = forceOnline
+    ? await createProductOnline(payload)
+    : await onlineOrOfflineWrite(
+        () => createProductOnline(payload),
+        () => offlineCreateProduct(payload)
+      );
+  if (sync) await syncCatalog();
+  return productId;
+}
+
+async function updateProductOnline(id, payload) {
   const sb = requireSupabase();
   const units = normalizeProductUnitFields(payload);
   const cost = Number(payload.weighted_avg_cost);
@@ -238,7 +306,17 @@ export async function updateProduct(id, payload) {
   if (payload.tags !== undefined) {
     await setProductTags(id, payload.tags);
   }
-  await syncCatalog();
+  return data;
+}
+
+export async function updateProduct(id, payload, { sync = true, forceOnline = false } = {}) {
+  const data = forceOnline
+    ? await updateProductOnline(id, payload)
+    : await onlineOrOfflineWrite(
+        () => updateProductOnline(id, payload),
+        () => offlineUpdateProduct(id, payload)
+      );
+  if (sync) await syncCatalog();
   return data;
 }
 
@@ -278,7 +356,6 @@ export async function updateProductsBulk(rows, { vendorId = undefined, categoryI
       continue;
     }
     try {
-      const sb = requireSupabase();
       const units = normalizeProductUnitFields(row);
       const cost = Number(row.purchase_price ?? row.weighted_avg_cost);
       const payload = {
@@ -302,15 +379,13 @@ export async function updateProductsBulk(rows, { vendorId = undefined, categoryI
         weighted_avg_cost: Number.isFinite(cost) ? cost : 0,
         low_stock_threshold: Math.max(0, Math.floor(Number(row.low_stock_threshold) || 5)),
         is_active: row.is_active !== false,
-        updated_at: new Date().toISOString(),
       };
-      const { error } = await sb.from("products").update(payload).eq("id", row.id);
-      if (error) throw error;
+      await updateProduct(row.id, payload, { sync: false });
 
       const stockNow = Math.max(0, Math.floor(Number(row.current_stock) || 0));
       const stockWas = Math.max(0, Math.floor(Number(row.stock_at_open) || 0));
       if (stockNow !== stockWas) {
-        await setProductStock(row.id, stockNow, "Stock updated from bulk edit");
+        await setProductStock(row.id, stockNow, "Stock updated from bulk edit", { sync: false });
       }
       updated.push({ index: i, productId: row.id, name });
     } catch (e) {
@@ -323,41 +398,144 @@ export async function updateProductsBulk(rows, { vendorId = undefined, categoryI
 }
 
 export async function deactivateProduct(id) {
-  const sb = requireSupabase();
-  const { data, error } = await sb
-    .from("products")
-    .update({ is_active: false, updated_at: new Date().toISOString() })
-    .eq("id", id)
-    .select()
-    .single();
-  if (error) throw error;
+  const data = await onlineOrOfflineWrite(
+    async () => {
+      const sb = requireSupabase();
+      const { data, error } = await sb
+        .from("products")
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    },
+    () => offlineDeactivateProduct(id)
+  );
   await syncCatalog();
   return data;
 }
 
 export async function deleteProductsBulk(ids) {
-  const sb = requireSupabase();
-  const unique = [...new Set(ids.filter(Boolean))];
-  if (!unique.length) return { deleted: 0, failed: [] };
-  const { data, error } = await sb.rpc("delete_products_bulk", {
-    p_product_ids: unique,
-  });
-  if (error) throw error;
+  const result = await onlineOrOfflineWrite(
+    async () => {
+      const sb = requireSupabase();
+      const unique = [...new Set(ids.filter(Boolean))];
+      if (!unique.length) return { deleted: 0, failed: [] };
+      const { data, error } = await sb.rpc("delete_products_bulk", {
+        p_product_ids: unique,
+      });
+      if (error) throw error;
+      return {
+        deleted: data?.deleted ?? 0,
+        failed: data?.failed ?? [],
+      };
+    },
+    () => offlineDeleteProductsBulk(ids)
+  );
   await syncCatalog();
-  return {
-    deleted: data?.deleted ?? 0,
-    failed: data?.failed ?? [],
-  };
+  return result;
 }
 
 export async function deactivateProductsBulk(ids) {
-  const sb = requireSupabase();
-  const unique = [...new Set(ids.filter(Boolean))];
-  if (!unique.length) return 0;
-  const { data, error } = await sb.rpc("deactivate_products_bulk", {
-    p_product_ids: unique,
-  });
-  if (error) throw error;
+  const result = await onlineOrOfflineWrite(
+    async () => {
+      const sb = requireSupabase();
+      const unique = [...new Set(ids.filter(Boolean))];
+      if (!unique.length) return 0;
+      const { data, error } = await sb.rpc("deactivate_products_bulk", {
+        p_product_ids: unique,
+      });
+      if (error) throw error;
+      return data ?? 0;
+    },
+    () => offlineDeactivateProductsBulk(ids)
+  );
   await syncCatalog();
-  return data ?? 0;
+  return result;
+}
+
+export async function reactivateProductsBulk(ids) {
+  const result = await onlineOrOfflineWrite(
+    async () => {
+      const sb = requireSupabase();
+      const unique = [...new Set(ids.filter(Boolean))];
+      if (!unique.length) return 0;
+      const { error, count } = await sb
+        .from("products")
+        .update({ is_active: true, updated_at: new Date().toISOString() })
+        .in("id", unique);
+      if (error) throw error;
+      return count ?? unique.length;
+    },
+    () => offlineReactivateProductsBulk(ids)
+  );
+  await syncCatalog();
+  return result;
+}
+
+/** Snapshot product rows before permanent delete (for session undo restore). */
+export async function snapshotProductsForUndo(ids) {
+  const unique = [...new Set((ids || []).filter(Boolean))];
+  if (!unique.length) return [];
+
+  return onlineOrOfflineRead(
+    async () => {
+      const sb = requireSupabase();
+      const { data, error } = await sb.from("products").select("*").in("id", unique);
+      if (error) throw error;
+      return data ?? [];
+    },
+    () => {
+      const cache = useProductCacheStore();
+      const set = new Set(unique.map(String));
+      return (cache.products || []).filter((p) => set.has(String(p.id))).map((p) => ({ ...p }));
+    }
+  );
+}
+
+/**
+ * Recreate products from pre-delete snapshots (new ids). Restores catalog + stock qty,
+ * not historical stock movements.
+ */
+export async function restoreProductsFromSnapshots(snapshots) {
+  const rows = Array.isArray(snapshots) ? snapshots.filter((r) => r?.name) : [];
+  if (!rows.length) return { restored: 0, errors: [] };
+
+  const created = [];
+  const errors = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    try {
+      const sale = Number(row.selling_price) || 0;
+      const pack = Math.max(1, Math.floor(Number(row.pieces_per_pack) || 1));
+      await createProduct(
+        {
+          name: row.name,
+          external_product_id: row.external_product_id || "",
+          sku: row.sku,
+          barcode: row.barcode,
+          vendor_id: row.vendor_id || null,
+          category_id: row.category_id || null,
+          selling_price: sale,
+          purchase_price: Number(row.weighted_avg_cost) || Number(row.purchase_price) || 0,
+          initial_qty: Math.max(0, Math.floor(Number(row.current_stock) || 0)),
+          low_stock_threshold: Math.max(0, Math.floor(Number(row.low_stock_threshold) || 5)),
+          pieces_per_pack: pack,
+          pieces_per_box: row.pieces_per_box,
+          piece_selling_price: row.piece_selling_price ?? sale,
+          pack_selling_price: row.pack_selling_price ?? sale,
+          box_selling_price: row.box_selling_price,
+          default_sale_unit: row.default_sale_unit || (pack > 1 ? "pack" : "piece"),
+          tags: row.tags,
+        },
+        { sync: false }
+      );
+      created.push(row.name);
+    } catch (e) {
+      errors.push({ name: row.name || "—", message: e?.message || "Restore failed" });
+    }
+  }
+  await syncCatalog();
+  return { restored: created.length, errors };
 }

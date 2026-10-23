@@ -1,4 +1,4 @@
-import { requireSupabase } from "../lib/supabase.js";
+import { requireSupabase, supabaseConfigured } from "../lib/supabase.js";
 import {
   normalizeLabelFontFamily,
   normalizeLabelFontSize,
@@ -9,6 +9,8 @@ import {
 } from "../config/printFonts.js";
 import { normalizeSaleUnit, setAppDefaultLabelUnit } from "../utils/saleUnits.js";
 
+const SETTINGS_CACHE_KEY = "dw_app_settings_v1";
+
 function applySettingsSideEffects(data) {
   if (data && "default_label_unit" in data) {
     setAppDefaultLabelUnit(data.default_label_unit);
@@ -16,17 +18,50 @@ function applySettingsSideEffects(data) {
   return data;
 }
 
+function saveSettingsCache(data) {
+  if (!data) return;
+  try {
+    localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ data, cachedAt: Date.now() }));
+  } catch {
+    /* quota */
+  }
+}
+
+/** Last successfully fetched settings (for offline receipt print). */
+export function getCachedSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.data ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getSettings() {
-  const sb = requireSupabase();
-  const { data, error } = await sb.from("app_settings").select("*").limit(1).maybeSingle();
-  if (error) throw error;
-  return applySettingsSideEffects(data);
+  const cached = getCachedSettings();
+  if (!supabaseConfigured) {
+    return applySettingsSideEffects(cached);
+  }
+  const { onlineOrOfflineRead } = await import("./offlineGuard.js");
+  return onlineOrOfflineRead(
+    async () => {
+      const sb = requireSupabase();
+      const { data, error } = await sb.from("app_settings").select("*").limit(1).maybeSingle();
+      if (error) throw error;
+      if (data) saveSettingsCache(data);
+      return applySettingsSideEffects(data ?? cached);
+    },
+    () => applySettingsSideEffects(cached)
+  );
 }
 
 export async function updateSettings(payload) {
-  const sb = requireSupabase();
-  const current = await getSettings();
-  const row = {
+  const { onlineOrOfflineWrite } = await import("./offlineGuard.js");
+  const { useAdminOutboxStore } = await import("../stores/adminOutbox.js");
+
+  const rowFromPayload = {
     store_name: payload.store_name?.trim() || "Discount World by WABz",
     currency_code: "PKR",
     default_low_stock_threshold: Math.max(0, Math.floor(Number(payload.default_low_stock_threshold) || 5)),
@@ -58,12 +93,42 @@ export async function updateSettings(payload) {
       : null,
     updated_at: new Date().toISOString(),
   };
-  if (current?.id) {
-    const { data, error } = await sb.from("app_settings").update(row).eq("id", current.id).select().single();
-    if (error) throw error;
-    return applySettingsSideEffects(data);
-  }
-  const { data, error } = await sb.from("app_settings").insert(row).select().single();
-  if (error) throw error;
-  return applySettingsSideEffects(data);
+
+  return onlineOrOfflineWrite(
+    async () => {
+      const sb = requireSupabase();
+      // Direct fetch — do not nest onlineOrOfflineRead (avoids sticky-offline on slow settings read)
+      const { data: current, error: readErr } = await sb
+        .from("app_settings")
+        .select("id")
+        .limit(1)
+        .maybeSingle();
+      if (readErr) throw readErr;
+      if (current?.id) {
+        const { data, error } = await sb
+          .from("app_settings")
+          .update(rowFromPayload)
+          .eq("id", current.id)
+          .select()
+          .single();
+        if (error) throw error;
+        saveSettingsCache(data);
+        return applySettingsSideEffects(data);
+      }
+      const { data, error } = await sb.from("app_settings").insert(rowFromPayload).select().single();
+      if (error) throw error;
+      saveSettingsCache(data);
+      return applySettingsSideEffects(data);
+    },
+    () => {
+      const cached = { ...(getCachedSettings() || {}), ...rowFromPayload, id: getCachedSettings()?.id };
+      saveSettingsCache(cached);
+      useAdminOutboxStore().enqueue({
+        type: "settings.update",
+        payload: { row: rowFromPayload, id: cached.id || null },
+        label: "Settings update",
+      });
+      return applySettingsSideEffects(cached);
+    }
+  );
 }

@@ -1,33 +1,108 @@
 import { requireSupabase } from "../lib/supabase.js";
 
-function startOfTodayIso() {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
+/** Page through PostgREST (default max often 1000) so overall totals stay accurate. */
+async function fetchAllRows(buildQuery, pageSize = 1000) {
+  const rows = [];
+  let from = 0;
+  for (;;) {
+    const to = from + pageSize - 1;
+    const { data, error } = await buildQuery().range(from, to);
+    if (error) throw error;
+    const chunk = data ?? [];
+    rows.push(...chunk);
+    if (chunk.length < pageSize) break;
+    from += pageSize;
+  }
+  return rows;
 }
 
+function startOfLocalDay(d = new Date()) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function startOfWeek(d = new Date()) {
+  const x = startOfLocalDay(d);
+  const day = x.getDay(); // 0 Sun
+  const diff = day === 0 ? 6 : day - 1; // Monday start
+  x.setDate(x.getDate() - diff);
+  return x;
+}
+
+function startOfMonth(d = new Date()) {
+  const x = startOfLocalDay(d);
+  x.setDate(1);
+  return x;
+}
+
+function dayKey(isoOrDate) {
+  const d = typeof isoOrDate === "string" ? new Date(isoOrDate) : isoOrDate;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function lineProfit(item) {
+  const rev = Number(item.line_total) - Number(item.discount_amount || 0);
+  const cost = Number(item.unit_cost) * Number(item.quantity);
+  return rev - cost;
+}
+
+function emptyPeriod() {
+  return { salesCount: 0, revenue: 0, profit: 0, marginPct: null };
+}
+
+function withMargin(period) {
+  const rev = period.revenue;
+  const profit = period.profit;
+  return {
+    ...period,
+    marginPct: rev > 0 ? Math.round((profit / rev) * 10000) / 100 : null,
+  };
+}
+
+/**
+ * Aggregate sales into today / week / month / overall + last-7-day spark series.
+ */
 export async function fetchDashboardStats() {
   const sb = requireSupabase();
-  const today = startOfTodayIso();
+  const now = new Date();
+  const todayStart = startOfLocalDay(now);
+  const weekStart = startOfWeek(now);
+  const monthStart = startOfMonth(now);
+  const sevenDaysAgo = startOfLocalDay(now);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
 
-  const [productsRes, salesRes, lowStockRes] = await Promise.all([
+  const [productsRes, sales, items, lowStockRes, recentRes] = await Promise.all([
     sb.from("products").select("current_stock, weighted_avg_cost, is_active").eq("is_active", true),
-    sb
-      .from("sales")
-      .select("id, total_amount, completed_at")
-      .eq("status", "completed")
-      .gte("completed_at", today),
+    fetchAllRows(() =>
+      sb.from("sales").select("id, total_amount, completed_at").eq("status", "completed")
+    ),
+    fetchAllRows(() =>
+      sb
+        .from("sale_items")
+        .select("sale_id, line_total, discount_amount, unit_cost, quantity")
+    ),
     sb
       .from("products")
       .select("id, name, current_stock, low_stock_threshold")
       .eq("is_active", true)
       .eq("is_low_stock", true)
+      .order("current_stock", { ascending: true })
+      .limit(12),
+    sb
+      .from("sales")
+      .select("id, sale_reference, total_amount, completed_at")
+      .eq("status", "completed")
+      .order("completed_at", { ascending: false })
       .limit(10),
   ]);
 
   if (productsRes.error) throw productsRes.error;
-  if (salesRes.error) throw salesRes.error;
   if (lowStockRes.error) throw lowStockRes.error;
+  if (recentRes.error) throw recentRes.error;
 
   const products = productsRes.data ?? [];
   const activeCount = products.length;
@@ -37,37 +112,88 @@ export async function fetchDashboardStats() {
     0
   );
 
-  const todaySales = salesRes.data ?? [];
-  const todayRevenue = todaySales.reduce((s, x) => s + Number(x.total_amount || 0), 0);
-
-  const saleIds = todaySales.map((s) => s.id);
-  let todayProfit = 0;
-  if (saleIds.length) {
-    const { data: items, error } = await sb.from("sale_items").select("*").in("sale_id", saleIds);
-    if (error) throw error;
-    todayProfit = (items ?? []).reduce((sum, i) => {
-      const rev = Number(i.line_total) - Number(i.discount_amount || 0);
-      const cost = Number(i.unit_cost) * Number(i.quantity);
-      return sum + (rev - cost);
-    }, 0);
+  /** @type {Map<string, number>} */
+  const profitBySale = new Map();
+  for (const item of items) {
+    const id = item.sale_id;
+    profitBySale.set(id, (profitBySale.get(id) || 0) + lineProfit(item));
   }
 
-  const { data: recentSales, error: rsErr } = await sb
-    .from("sales")
-    .select("id, sale_reference, total_amount, completed_at")
-    .eq("status", "completed")
-    .order("completed_at", { ascending: false })
-    .limit(8);
-  if (rsErr) throw rsErr;
+  const today = emptyPeriod();
+  const week = emptyPeriod();
+  const month = emptyPeriod();
+  const overall = emptyPeriod();
+
+  /** @type {Map<string, { revenue: number, profit: number, salesCount: number }>} */
+  const byDay = new Map();
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(sevenDaysAgo);
+    d.setDate(sevenDaysAgo.getDate() + i);
+    byDay.set(dayKey(d), { revenue: 0, profit: 0, salesCount: 0 });
+  }
+
+  for (const sale of sales) {
+    const completed = new Date(sale.completed_at);
+    const revenue = Number(sale.total_amount || 0);
+    const profit = profitBySale.get(sale.id) || 0;
+
+    overall.salesCount += 1;
+    overall.revenue += revenue;
+    overall.profit += profit;
+
+    if (completed >= monthStart) {
+      month.salesCount += 1;
+      month.revenue += revenue;
+      month.profit += profit;
+    }
+    if (completed >= weekStart) {
+      week.salesCount += 1;
+      week.revenue += revenue;
+      week.profit += profit;
+    }
+    if (completed >= todayStart) {
+      today.salesCount += 1;
+      today.revenue += revenue;
+      today.profit += profit;
+    }
+
+    const key = dayKey(completed);
+    if (byDay.has(key)) {
+      const bucket = byDay.get(key);
+      bucket.revenue += revenue;
+      bucket.profit += profit;
+      bucket.salesCount += 1;
+    }
+  }
+
+  const last7Days = [...byDay.entries()].map(([date, v]) => {
+    const d = new Date(`${date}T12:00:00`);
+    return {
+      date,
+      label: d.toLocaleDateString(undefined, { weekday: "short" }),
+      dayNum: d.getDate(),
+      revenue: v.revenue,
+      profit: v.profit,
+      salesCount: v.salesCount,
+    };
+  });
+  const peakDayRevenue = Math.max(0, ...last7Days.map((d) => d.revenue));
 
   return {
     activeCount,
     unitsInStock,
     inventoryValue,
-    todaySalesCount: todaySales.length,
-    todayRevenue,
-    todayProfit,
+    // backward-compatible aliases used by older UI bits
+    todaySalesCount: today.salesCount,
+    todayRevenue: today.revenue,
+    todayProfit: today.profit,
+    today: withMargin(today),
+    week: withMargin(week),
+    month: withMargin(month),
+    overall: withMargin(overall),
+    last7Days,
+    peakDayRevenue,
     lowStock: lowStockRes.data ?? [],
-    recentSales: recentSales ?? [],
+    recentSales: recentRes.data ?? [],
   };
 }

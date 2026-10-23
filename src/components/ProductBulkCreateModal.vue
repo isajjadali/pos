@@ -10,8 +10,10 @@ import {
   NDataTable,
   NText,
   NAlert,
+  NIcon,
   useMessage,
 } from "naive-ui";
+import { ArrowDownOutline } from "@vicons/ionicons5";
 import { formatPkr, marginPercent } from "../utils/format.js";
 import { fitNameColumnWidth } from "../utils/tableColumns.js";
 import { previewBulkExternalProductIds, createProductsBulk } from "../services/products.js";
@@ -47,10 +49,28 @@ function newDraftRow() {
 }
 
 const draftRows = ref([newDraftRow()]);
+/** Last edited cell — used as source for "copy to all rows". */
+const lastEdit = ref({ field: null, rowIndex: 0 });
 
 const vendorName = computed(
   () => props.vendorOptions.find((o) => o.value === vendorId.value)?.label || ""
 );
+
+function markEdit(field, rowIndex) {
+  lastEdit.value = { field, rowIndex };
+}
+
+function copyFieldToAll(field) {
+  const rows = draftRows.value;
+  if (!rows.length) return;
+  let src = lastEdit.value.field === field ? lastEdit.value.rowIndex : 0;
+  if (src < 0 || src >= rows.length) src = 0;
+  const value = rows[src][field];
+  for (const row of rows) {
+    row[field] = value;
+  }
+  message.success(`Copied to all ${rows.length} row(s)`);
+}
 
 const filledDraftRows = computed(() =>
   draftRows.value.filter((r) => String(r.name ?? "").trim())
@@ -260,12 +280,72 @@ function close() {
       </NSpace>
       <div class="bulk-create-grid">
         <div class="bulk-create-head">
-          <span>Product ID</span>
-          <span>Name</span>
-          <span>Qty pcs</span>
-          <span>Purchase</span>
-          <span>Pack pcs</span>
-          <span>Sale</span>
+          <span class="bulk-col-head">
+            Product ID
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows (uses last edited cell, else first row)"
+              @click="copyFieldToAll('external_product_id')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
+          <span class="bulk-col-head">
+            Name
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows"
+              @click="copyFieldToAll('name')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
+          <span class="bulk-col-head">
+            Qty pcs
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows"
+              @click="copyFieldToAll('initial_qty')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
+          <span class="bulk-col-head">
+            Purchase
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows"
+              @click="copyFieldToAll('purchase_price')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
+          <span class="bulk-col-head">
+            Pack pcs
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows"
+              @click="copyFieldToAll('pieces_per_pack')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
+          <span class="bulk-col-head">
+            Sale
+            <button
+              type="button"
+              class="bulk-copy-all"
+              title="Copy this column to all rows"
+              @click="copyFieldToAll('selling_price')"
+            >
+              <NIcon :component="ArrowDownOutline" :size="14" />
+            </button>
+          </span>
           <span title="Gross margin (default unit)">Gross %</span>
           <span />
         </div>
@@ -279,6 +359,8 @@ function close() {
               v-model:value="row.external_product_id"
               placeholder="Auto"
               size="small"
+              @focus="markEdit('external_product_id', rowIndex)"
+              @update:value="markEdit('external_product_id', rowIndex)"
               @keydown.enter.prevent="onEnter(rowIndex, 0)"
             />
           </div>
@@ -287,6 +369,8 @@ function close() {
               v-model:value="row.name"
               placeholder="Product name"
               size="small"
+              @focus="markEdit('name', rowIndex)"
+              @update:value="markEdit('name', rowIndex)"
               @keydown.enter.prevent="onEnter(rowIndex, 1)"
             />
           </div>
@@ -298,6 +382,8 @@ function close() {
               :show-button="false"
               size="small"
               style="width: 100%"
+              @focus="markEdit('initial_qty', rowIndex)"
+              @update:value="markEdit('initial_qty', rowIndex)"
               @keydown.enter.prevent="onEnter(rowIndex, 2)"
             />
           </div>
@@ -308,6 +394,8 @@ function close() {
               :show-button="false"
               size="small"
               style="width: 100%"
+              @focus="markEdit('purchase_price', rowIndex)"
+              @update:value="markEdit('purchase_price', rowIndex)"
               @keydown.enter.prevent="onEnter(rowIndex, 3)"
             />
           </div>
@@ -319,6 +407,8 @@ function close() {
               :show-button="false"
               size="small"
               style="width: 100%"
+              @focus="markEdit('pieces_per_pack', rowIndex)"
+              @update:value="markEdit('pieces_per_pack', rowIndex)"
               @keydown.enter.prevent="onEnter(rowIndex, 4)"
             />
           </div>
@@ -329,6 +419,8 @@ function close() {
               :show-button="false"
               size="small"
               style="width: 100%"
+              @focus="markEdit('selling_price', rowIndex)"
+              @update:value="markEdit('selling_price', rowIndex)"
               @keydown.enter.prevent="onEnter(rowIndex, 5)"
             />
           </div>
@@ -404,6 +496,30 @@ function close() {
   background: var(--n-color);
   padding-bottom: 4px;
   z-index: 1;
+}
+.bulk-col-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.bulk-copy-all {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: var(--n-text-color-3);
+  cursor: pointer;
+  border-radius: 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.bulk-copy-all:hover {
+  color: var(--n-primary-color);
+  background: var(--n-button-color-2, rgba(0, 0, 0, 0.04));
 }
 .bulk-margin {
   font-size: 12px;

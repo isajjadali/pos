@@ -14,14 +14,21 @@ import {
   NSelect,
   NAlert,
   NText,
+  NDrawer,
+  NDrawerContent,
+  NDropdown,
+  NButtonGroup,
+  NIcon,
   useMessage,
   useDialog,
 } from "naive-ui";
+import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
 import ProductBulkCreateModal from "../components/ProductBulkCreateModal.vue";
 import ProductBulkEditModal from "../components/ProductBulkEditModal.vue";
 import ShopifyBulkImagesModal from "../components/ShopifyBulkImagesModal.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
+import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { formatPkr, marginPercent } from "../utils/format.js";
 import { listActiveVendorOptions } from "../services/vendors.js";
@@ -33,8 +40,12 @@ import {
   deactivateProduct,
   deleteProductsBulk,
   deactivateProductsBulk,
+  reactivateProductsBulk,
+  snapshotProductsForUndo,
+  restoreProductsFromSnapshots,
   nextExternalProductId,
 } from "../services/products.js";
+import { useLastActionUndo } from "../composables/useLastActionUndo.js";
 import { receiveStock, setProductStock } from "../services/inventory.js";
 import {
   shopifyPushOne,
@@ -47,12 +58,14 @@ import { FEATURE_SHOPIFY } from "../config/features.js";
 
 const shopifyFeatureOn = FEATURE_SHOPIFY;
 import { shouldBlockShortcut } from "../utils/hotkeys.js";
-import { refreshProductCatalog } from "../services/productCatalog.js";
+import { refreshProductCatalog, PRODUCT_CATALOG_UPDATED } from "../services/productCatalog.js";
+import { clearForcedOffline } from "../services/offlineGuard.js";
 import { usePermissions } from "../composables/usePermissions.js";
 import {
   rowNumberColumn,
   tableSorter,
   compareStrings,
+  createdAtColumn,
   fitNameColumnWidth,
   paginationTotalPrefix,
 } from "../utils/tableColumns.js";
@@ -72,6 +85,36 @@ import {
 const message = useMessage();
 const dialog = useDialog();
 const { canManageProducts, canSeePurchasePrices } = usePermissions();
+const {
+  hasUndo,
+  register: registerUndo,
+  undo: performUndo,
+  canUndo,
+} = useLastActionUndo();
+
+async function runUndoFromUi() {
+  // Avoid Naive message VNode teardown races while the table remounts
+  try {
+    message.destroyAll();
+  } catch {
+    /* ignore */
+  }
+  const res = await performUndo();
+  if (!res.ok) {
+    if (res.error && res.error !== "Nothing to undo") {
+      message.error(res.error);
+    }
+    return;
+  }
+  message.success("Undone");
+  checkedRowKeys.value = [];
+  await reloadTableAndCatalog();
+}
+
+/** Plain string only — object-form message content was showing blank toasts. */
+function notifyWithUndo(text) {
+  message.success(`${String(text || "Done")} — press Undo or Ctrl+Z (30s)`);
+}
 
 const loading = ref(false);
 const rows = ref([]);
@@ -81,9 +124,9 @@ const pageSize = ref(20);
 const sortKey = ref(null);
 const sortOrder = ref(null);
 const search = ref("");
-const vendorFilter = ref(null);
-const categoryFilter = ref(null);
-const tagFilter = ref(null);
+const vendorFilter = ref([]);
+const categoryFilter = ref([]);
+const tagFilter = ref([]);
 const tagOptions = ref([]);
 const tagsDbReady = ref(false);
 const lowStockOnly = ref(false);
@@ -94,18 +137,29 @@ const unitFilterOptions = UNIT_LISTING_FILTER_OPTIONS;
 const hasActiveFilters = computed(
   () =>
     Boolean(search.value.trim()) ||
-    vendorFilter.value != null ||
-    categoryFilter.value != null ||
-    (tagsDbReady.value && tagFilter.value != null) ||
+    (vendorFilter.value?.length ?? 0) > 0 ||
+    (categoryFilter.value?.length ?? 0) > 0 ||
+    (tagsDbReady.value && (tagFilter.value?.length ?? 0) > 0) ||
     lowStockOnly.value ||
     !activeOnly.value ||
     unitFilter.value !== "all"
 );
+/** Secondary filters only (shown inside More filters) — drives badge count. */
+const moreFiltersCount = computed(() => {
+  let n = 0;
+  if ((categoryFilter.value?.length ?? 0) > 0) n += 1;
+  if (tagsDbReady.value && (tagFilter.value?.length ?? 0) > 0) n += 1;
+  if (unitFilter.value !== "all") n += 1;
+  if (lowStockOnly.value) n += 1;
+  if (!activeOnly.value) n += 1;
+  return n;
+});
+const showMoreFilters = ref(false);
 function clearFilters() {
   search.value = "";
-  vendorFilter.value = null;
-  categoryFilter.value = null;
-  tagFilter.value = null;
+  vendorFilter.value = [];
+  categoryFilter.value = [];
+  tagFilter.value = [];
   lowStockOnly.value = false;
   activeOnly.value = true;
   unitFilter.value = "all";
@@ -113,6 +167,79 @@ function clearFilters() {
   sortOrder.value = null;
   page.value = 1;
   checkedRowKeys.value = [];
+}
+
+/** More actions for the split-button dropdown (Add stays on the primary). */
+const productActionOptions = computed(() => {
+  if (!canManageProducts.value) return [];
+  const n = checkedRowKeys.value.length;
+  const ready = Boolean(supabaseConfigured);
+  const opts = [
+    { label: "Bulk create", key: "bulk-create", disabled: !ready },
+    { type: "divider", key: "d1" },
+    {
+      label: n ? `Bulk edit (${n})` : "Bulk edit",
+      key: "bulk-edit",
+      disabled: !ready || !n,
+    },
+    {
+      label: "Deactivate selected",
+      key: "deactivate",
+      disabled: !ready || !n,
+    },
+    {
+      label: n ? `Delete selected (${n})` : "Delete selected",
+      key: "delete",
+      disabled: !ready || !n,
+      props: { style: "color: #dc2626" },
+    },
+  ];
+  if (shopifyFeatureOn) {
+    opts.push(
+      { type: "divider", key: "d2" },
+      { label: "Shopify images", key: "shopify-images", disabled: !ready },
+      {
+        label: "Push Shopify prices",
+        key: "shopify-prices",
+        disabled: !ready || !n || shopifyPriceBusy.value,
+      }
+    );
+  }
+  if (hasUndo.value) {
+    opts.push(
+      { type: "divider", key: "d3" },
+      { label: "Undo (Ctrl+Z)", key: "undo", disabled: !ready }
+    );
+  }
+  return opts;
+});
+
+function onProductActionSelect(key) {
+  switch (key) {
+    case "bulk-create":
+      showBulkCreate.value = true;
+      break;
+    case "bulk-edit":
+      openBulkEdit();
+      break;
+    case "deactivate":
+      confirmBulkDeactivate();
+      break;
+    case "delete":
+      confirmBulkDelete();
+      break;
+    case "shopify-images":
+      showBulkShopifyImages.value = true;
+      break;
+    case "shopify-prices":
+      pushSelectedShopifyPrices();
+      break;
+    case "undo":
+      runUndoFromUi();
+      break;
+    default:
+      break;
+  }
 }
 
 /** Drop stale selections when the list context changes (filters / page). */
@@ -127,9 +254,9 @@ const { routeSyncing } = useRouteQuerySync(
     q: { ...routeQuery.string(search), debounceMs: 300 },
     page: routeQuery.positiveInt(page, 1),
     pageSize: routeQuery.positiveInt(pageSize, 20),
-    vendor: routeQuery.optionalString(vendorFilter),
-    category: routeQuery.optionalString(categoryFilter),
-    tag: routeQuery.optionalString(tagFilter),
+    vendor: routeQuery.stringList(vendorFilter),
+    category: routeQuery.stringList(categoryFilter),
+    tag: routeQuery.stringList(tagFilter),
     lowStock: routeQuery.booleanFlag(lowStockOnly, false),
     active: {
       ref: activeOnly,
@@ -303,6 +430,7 @@ const tableScrollX = computed(() => {
   x += 160 + 120 + 88; // tags, barcode, stock
   if (canSeePurchasePrices.value) x += 100;
   x += 140; // sale (multi-line unit prices)
+  x += 158; // created
   if (canManageProducts.value) x += 120 + 90 + 210; // vendor, status, actions
   return x + 24;
 });
@@ -398,6 +526,7 @@ const columns = computed(() => {
         formatProductUnitPrices(row, { multiline: true })
       ),
   });
+  cols.push(createdAtColumn({ remote: true }));
   if (canManageProducts.value) {
     cols.push(
       {
@@ -468,8 +597,16 @@ async function loadMeta() {
 }
 
 async function reloadTableAndCatalog() {
-  await refreshProductCatalog().catch(() => {});
+  clearForcedOffline();
+  await refreshProductCatalog({ force: true }).catch(() => {});
   await load();
+}
+
+function onCatalogUpdated() {
+  if (typeof navigator !== "undefined" && navigator.onLine) {
+    clearForcedOffline();
+  }
+  load();
 }
 
 async function load() {
@@ -478,11 +615,11 @@ async function load() {
   try {
     const res = await listProducts({
       search: search.value,
-      vendorId: vendorFilter.value,
-      categoryId: categoryFilter.value,
+      vendorIds: vendorFilter.value,
+      categoryIds: categoryFilter.value,
       lowStockOnly: lowStockOnly.value,
       activeOnly: activeOnly.value,
-      tag: tagFilter.value,
+      tags: tagFilter.value,
       unitFilter: unitFilter.value,
       page: page.value,
       pageSize: pageSize.value,
@@ -625,19 +762,25 @@ function openEdit(row) {
 }
 
 function confirmBulkDeactivate() {
-  const ids = checkedRowKeys.value;
+  const ids = [...checkedRowKeys.value];
   if (!ids.length) {
     message.warning("Select products first");
     return;
   }
   dialog.warning({
     title: "Deactivate selected?",
-    content: `${ids.length} product(s) will be hidden from POS. Stock history is kept.`,
+    content: `${ids.length} product(s) will be hidden from POS. Stock history is kept. Undo available for 30s.`,
     positiveText: "Deactivate",
     negativeText: "Cancel",
     onPositiveClick: async () => {
       await deactivateProductsBulk(ids);
-      message.success("Products deactivated");
+      registerUndo({
+        label: `Reactivate ${ids.length} product(s)`,
+        run: async () => {
+          await reactivateProductsBulk(ids);
+        },
+      });
+      notifyWithUndo(`Deactivated ${ids.length} product(s)`);
       checkedRowKeys.value = [];
       await load();
     },
@@ -645,23 +788,42 @@ function confirmBulkDeactivate() {
 }
 
 function confirmBulkDelete() {
-  const ids = checkedRowKeys.value;
+  const ids = [...checkedRowKeys.value];
   if (!ids.length) {
     message.warning("Select products first");
     return;
   }
   dialog.error({
     title: "Delete selected permanently?",
-    content: `${ids.length} product(s) will be removed from the database. This cannot be undone. Sale receipts keep product name snapshots.`,
+    content: `${ids.length} product(s) will be removed from the database. Undo available for 30s (restores catalog + stock qty; movement history is not restored). Sale receipts keep product name snapshots.`,
     positiveText: "Delete",
     negativeText: "Cancel",
     onPositiveClick: async () => {
       try {
+        const snapshots = await snapshotProductsForUndo(ids);
         const res = await deleteProductsBulk(ids);
+        if (res.deleted > 0 && snapshots.length) {
+          registerUndo({
+            label: `Restore ${snapshots.length} product(s)`,
+            run: async () => {
+              const restored = await restoreProductsFromSnapshots(snapshots);
+              if (restored.errors?.length) {
+                throw new Error(
+                  `Restored ${restored.restored}; ${restored.errors.length} failed`
+                );
+              }
+            },
+          });
+        }
+        const deletedCount = Number(res?.deleted) || 0;
         if (res.failed?.length) {
-          message.warning(`Deleted ${res.deleted}; ${res.failed.length} failed`);
+          const tip =
+            deletedCount > 0 && snapshots.length
+              ? `Deleted ${deletedCount}; ${res.failed.length} failed — press Undo or Ctrl+Z (30s)`
+              : `Deleted ${deletedCount}; ${res.failed.length} failed`;
+          message.warning(tip);
         } else {
-          message.success(`Deleted ${res.deleted} product(s)`);
+          notifyWithUndo(`Deleted ${deletedCount} product(s)`);
         }
         checkedRowKeys.value = [];
         await load();
@@ -675,12 +837,19 @@ function confirmBulkDelete() {
 function confirmDeactivate(row) {
   dialog.warning({
     title: "Deactivate product?",
-    content: `"${row.name}" will be hidden from POS. Stock history is kept.`,
+    content: `"${row.name}" will be hidden from POS. Stock history is kept. Undo available for 30s.`,
     positiveText: "Deactivate",
     negativeText: "Cancel",
     onPositiveClick: async () => {
-      await deactivateProduct(row.id);
-      message.success("Product deactivated");
+      const id = row.id;
+      await deactivateProduct(id);
+      registerUndo({
+        label: `Reactivate “${row.name}”`,
+        run: async () => {
+          await reactivateProductsBulk([id]);
+        },
+      });
+      notifyWithUndo("Product deactivated");
       await load();
     },
   });
@@ -815,6 +984,19 @@ function onProductsKeyDown(e) {
     nextTick(() => searchInputRef.value?.focus?.());
     return;
   }
+  // Ctrl/Cmd+Z — undo last deactivate/delete (skip when typing in a field)
+  if (
+    (e.ctrlKey || e.metaKey) &&
+    !e.shiftKey &&
+    !e.altKey &&
+    (e.key === "z" || e.key === "Z")
+  ) {
+    if (shouldBlockShortcut(e)) return;
+    if (!canUndo()) return;
+    e.preventDefault();
+    runUndoFromUi();
+    return;
+  }
   if (shouldBlockShortcut(e)) return;
   if (e.key === "n" || e.key === "N") {
     if (!canManageProducts.value) return;
@@ -828,11 +1010,15 @@ function onProductsKeyDown(e) {
 
 onMounted(async () => {
   window.addEventListener("keydown", onProductsKeyDown);
+  window.addEventListener(PRODUCT_CATALOG_UPDATED, onCatalogUpdated);
   await loadMeta();
   await load();
 });
 
-onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
+onUnmounted(() => {
+  window.removeEventListener("keydown", onProductsKeyDown);
+  window.removeEventListener(PRODUCT_CATALOG_UPDATED, onCatalogUpdated);
+});
 </script>
 
 <template>
@@ -842,107 +1028,94 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
       Catalog view — sale prices only. Use POS to place orders.
     </NText>
     <SupabaseRequiredAlert />
-    <NSpace class="app-filter-stack" style="margin-bottom: 16px" wrap>
-      <NInput
-        ref="searchInputRef"
-        v-model:value="search"
-        placeholder="Search (press /)"
-        clearable
-        style="width: 280px"
-      />
-      <NSelect
-        v-model:value="vendorFilter"
-        :options="vendorOptions"
-        placeholder="Vendor"
-        clearable
-        filterable
-        style="width: 200px"
-      />
-      <NSelect
-        v-model:value="categoryFilter"
-        :options="categoryOptions"
-        placeholder="Category"
-        clearable
-        style="width: 160px"
-      />
-      <NSelect
-        v-if="tagsDbReady"
-        v-model:value="tagFilter"
-        :options="tagOptions"
-        placeholder="Tag"
-        clearable
-        filterable
-        style="width: 200px"
-      />
-      <NSelect
-        v-model:value="unitFilter"
-        :options="unitFilterOptions"
-        placeholder="Unit"
-        style="width: 150px"
-      />
-      <NSwitch v-model:value="lowStockOnly">
-        <template #checked>Low stock</template>
-        <template #unchecked>All stock</template>
-      </NSwitch>
-      <NSwitch v-model:value="activeOnly">
-        <template #checked>Active only</template>
-        <template #unchecked>Include inactive</template>
-      </NSwitch>
-      <ClearFiltersButton :disabled="!hasActiveFilters" @clear="clearFilters" />
-      <NButton
-        v-if="canManageProducts"
-        type="primary"
-        :disabled="!supabaseConfigured"
-        @click="openCreate"
-      >
-        Add product
-      </NButton>
-      <NButton
-        v-if="canManageProducts"
-        :disabled="!supabaseConfigured"
-        @click="showBulkCreate = true"
-      >
-        Bulk create
-      </NButton>
-      <NButton
-        v-if="canManageProducts"
-        :disabled="!supabaseConfigured || !checkedRowKeys.length"
-        @click="openBulkEdit"
-      >
-        Bulk edit{{ checkedRowKeys.length ? ` (${checkedRowKeys.length})` : "" }}
-      </NButton>
-      <NButton
-        v-if="canManageProducts"
-        type="error"
-        :disabled="!supabaseConfigured || !checkedRowKeys.length"
-        @click="confirmBulkDelete"
-      >
-        Delete selected ({{ checkedRowKeys.length }})
-      </NButton>
-      <NButton
-        v-if="canManageProducts"
-        :disabled="!supabaseConfigured || !checkedRowKeys.length"
-        @click="confirmBulkDeactivate"
-      >
-        Deactivate selected
-      </NButton>
-      <NButton
-        v-if="canManageProducts && shopifyFeatureOn"
-        :disabled="!supabaseConfigured"
-        @click="showBulkShopifyImages = true"
-      >
-        Shopify images
-      </NButton>
-      <NButton
-        v-if="canManageProducts && shopifyFeatureOn"
-        :loading="shopifyPriceBusy"
-        :disabled="!supabaseConfigured || !checkedRowKeys.length"
-        @click="pushSelectedShopifyPrices"
-      >
-        Push Shopify prices
-      </NButton>
-      <NButton :disabled="!supabaseConfigured" @click="reloadTableAndCatalog">Refresh</NButton>
-    </NSpace>
+    <OfflinePendingBanner />
+    <div class="app-toolbar">
+      <NSpace class="app-filter-stack" align="center" wrap>
+        <NInput
+          ref="searchInputRef"
+          v-model:value="search"
+          placeholder="Search (press /)"
+          clearable
+          style="width: 280px"
+        />
+        <NSelect
+          v-model:value="vendorFilter"
+          :options="vendorOptions"
+          placeholder="Vendor"
+          multiple
+          clearable
+          filterable
+          max-tag-count="responsive"
+          style="min-width: 200px; max-width: 320px"
+        />
+        <NButton :type="moreFiltersCount ? 'warning' : 'default'" @click="showMoreFilters = true">
+          More filters{{ moreFiltersCount ? ` (${moreFiltersCount})` : "" }}
+        </NButton>
+        <NButtonGroup v-if="canManageProducts">
+          <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
+            Add product
+          </NButton>
+          <NDropdown
+            trigger="click"
+            :options="productActionOptions"
+            @select="onProductActionSelect"
+          >
+            <NButton
+              type="primary"
+              :disabled="!supabaseConfigured"
+              aria-label="More product actions"
+              style="padding: 0 10px"
+            >
+              <NIcon :component="ChevronDownOutline" :size="16" />
+            </NButton>
+          </NDropdown>
+        </NButtonGroup>
+        <NButton :disabled="!supabaseConfigured" @click="reloadTableAndCatalog">Refresh</NButton>
+        <ClearFiltersButton v-if="hasActiveFilters" :disabled="false" @clear="clearFilters" />
+      </NSpace>
+    </div>
+
+    <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
+      <NDrawerContent title="More filters" closable :native-scrollbar="false">
+        <div class="products-more-filters">
+          <NSelect
+            v-model:value="categoryFilter"
+            :options="categoryOptions"
+            placeholder="Category"
+            multiple
+            clearable
+            filterable
+            max-tag-count="responsive"
+            style="width: 100%"
+          />
+          <NSelect
+            v-if="tagsDbReady"
+            v-model:value="tagFilter"
+            :options="tagOptions"
+            placeholder="Tag"
+            multiple
+            clearable
+            filterable
+            max-tag-count="responsive"
+            style="width: 100%"
+          />
+          <NSelect
+            v-model:value="unitFilter"
+            :options="unitFilterOptions"
+            placeholder="Unit"
+            style="width: 100%"
+          />
+          <NSwitch v-model:value="lowStockOnly">
+            <template #checked>Low stock</template>
+            <template #unchecked>All stock</template>
+          </NSwitch>
+          <NSwitch v-model:value="activeOnly">
+            <template #checked>Active only</template>
+            <template #unchecked>Include inactive</template>
+          </NSwitch>
+        </div>
+      </NDrawerContent>
+    </NDrawer>
     <div class="app-table-panel">
       <NDataTable
         v-model:checked-row-keys="checkedRowKeys"
@@ -970,171 +1143,200 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
     <NModal
       v-model:show="showModal"
       preset="card"
+      class="product-modal"
       :title="isCreate ? 'Add product' : 'Edit product'"
-      style="width: min(920px, 96vw)"
+      style="width: min(960px, 96vw)"
     >
-      <NAlert v-if="belowCost" type="warning" style="margin-bottom: 12px">
-        Selling price is below purchase cost.
-      </NAlert>
-      <NForm label-placement="top" class="product-form-grid">
-        <NFormItem label="Vendor" class="span-2">
-          <NSelect
-            v-model:value="form.vendor_id"
-            :options="vendorOptions"
-            clearable
-            filterable
-            :placeholder="isCreate ? 'Select vendor (sets Product ID)' : 'Vendor'"
-          />
-        </NFormItem>
-        <NFormItem label="Product ID">
-          <NInput
-            v-model:value="form.external_product_id"
-            :disabled="isCreate"
-            :placeholder="isCreate ? 'Auto from vendor' : ''"
-          />
-        </NFormItem>
-        <NFormItem label="Product name" required class="span-3">
-          <NInput v-model:value="form.name" placeholder="Title Case on save" />
-        </NFormItem>
-        <NFormItem label="SKU">
-          <NInput v-model:value="form.sku" />
-        </NFormItem>
-        <NFormItem label="Barcode">
-          <NInput v-model:value="form.barcode" :placeholder="isCreate ? 'Auto if empty' : ''" />
-        </NFormItem>
-        <NFormItem label="Category">
-          <NSelect
-            v-model:value="form.category_id"
-            :options="categoryOptions"
-            clearable
-            filterable
-          />
-        </NFormItem>
-        <NFormItem v-if="canManageProducts && tagsDbReady" label="Tags" class="span-3">
-          <NSelect
-            v-model:value="form.tags"
-            :options="tagSelectOptions"
-            multiple
-            filterable
-            tag
-            placeholder="Type a tag and press Enter (e.g. missing)"
-            :on-create="onCreateTag"
-          />
-        </NFormItem>
-        <NFormItem label="New category" class="span-3">
-          <NSpace style="width: 100%">
-            <NInput v-model:value="newCategoryName" placeholder="New category name" style="flex: 1" />
-            <NButton :disabled="!newCategoryName.trim()" @click="addCategory">Add</NButton>
-          </NSpace>
-        </NFormItem>
-        <template v-if="isCreate">
-          <NFormItem label="Initial qty (pieces)">
-            <NInputNumber v-model:value="form.initial_qty" :min="0" :precision="0" style="width: 100%" />
+      <div class="product-modal-body">
+        <NAlert v-if="belowCost" type="warning" style="margin-bottom: 10px">
+          Selling price is below purchase cost.
+        </NAlert>
+        <NForm label-placement="top" class="product-form-grid">
+          <NFormItem label="Vendor">
+            <NSelect
+              v-model:value="form.vendor_id"
+              :options="vendorOptions"
+              clearable
+              filterable
+              :placeholder="isCreate ? 'Select vendor (sets Product ID)' : 'Vendor'"
+            />
           </NFormItem>
-          <NFormItem label="Purchase price / piece (PKR)">
-            <NInputNumber v-model:value="form.purchase_price" :min="0" style="width: 100%" />
+          <NFormItem label="Product ID">
+            <NInput
+              v-model:value="form.external_product_id"
+              :disabled="isCreate"
+              :placeholder="isCreate ? 'Auto from vendor' : ''"
+            />
           </NFormItem>
-          <NFormItem label="Default sell unit">
-            <NSelect v-model:value="form.default_sale_unit" :options="saleUnitSelectOptions" />
+          <NFormItem label="Category">
+            <NSelect
+              v-model:value="form.category_id"
+              :options="categoryOptions"
+              clearable
+              filterable
+            />
           </NFormItem>
-        </template>
-        <template v-else>
-          <NFormItem label="Stock (pieces)">
-            <NInputNumber v-model:value="form.current_stock" :min="0" :precision="0" style="width: 100%" />
+          <NFormItem label="Product name" required class="span-2">
+            <NInput v-model:value="form.name" placeholder="Title Case on save" />
           </NFormItem>
-          <NFormItem label="Add stock (pieces)">
-            <NInputNumber v-model:value="form.add_stock_qty" :min="0" :precision="0" style="width: 100%" />
+          <NFormItem label="Barcode">
+            <NInput v-model:value="form.barcode" :placeholder="isCreate ? 'Auto if empty' : ''" />
           </NFormItem>
-          <NFormItem label="Cost / new piece (PKR)">
-            <NInputNumber v-model:value="form.add_stock_unit_cost" :min="0" style="width: 100%" />
-          </NFormItem>
-          <NFormItem label="Avg purchase cost / piece">
-            <NInputNumber v-model:value="form.weighted_avg_cost" :min="0" style="width: 100%" />
-          </NFormItem>
-          <NFormItem label="Default sell unit">
-            <NSelect v-model:value="form.default_sale_unit" :options="saleUnitSelectOptions" />
+          <NFormItem label="SKU">
+            <NInput v-model:value="form.sku" />
           </NFormItem>
           <NFormItem
-            v-if="marginPercent(form.selling_price, form.weighted_avg_cost) !== null"
-            label="Gross margin (default unit)"
+            v-if="canManageProducts && tagsDbReady"
+            label="Tags"
+            class="span-2"
           >
-            <span>{{ marginPercent(form.selling_price, form.weighted_avg_cost) }}%</span>
-          </NFormItem>
-        </template>
-        <NFormItem label="Pcs per pack">
-          <NInputNumber v-model:value="form.pieces_per_pack" :min="1" :precision="0" style="width: 100%" />
-        </NFormItem>
-        <NFormItem label="Pack price (PKR)">
-          <NInputNumber v-model:value="form.pack_selling_price" :min="0" style="width: 100%" />
-        </NFormItem>
-        <NFormItem label="Piece price (PKR)">
-          <NInputNumber v-model:value="form.piece_selling_price" :min="0" style="width: 100%" />
-        </NFormItem>
-        <NFormItem label="Pcs per box (optional)">
-          <NInputNumber
-            v-model:value="form.pieces_per_box"
-            :min="1"
-            :precision="0"
-            clearable
-            placeholder="Leave empty if no box"
-            style="width: 100%"
-          />
-        </NFormItem>
-        <NFormItem label="Box price (PKR)">
-          <NInputNumber
-            v-model:value="form.box_selling_price"
-            :min="0"
-            clearable
-            :disabled="!form.pieces_per_box"
-            style="width: 100%"
-          />
-        </NFormItem>
-        <NFormItem label="Stock breakdown" class="span-3">
-          <NText depth="3" style="font-size: 13px">{{ unitStockHint }}</NText>
-        </NFormItem>
-        <NFormItem
-          v-if="shopifyFeatureOn && !isCreate && canManageProducts"
-          label="Shopify online price (PKR)"
-          class="span-2"
-        >
-          <NInputNumber
-            v-model:value="form.shopify_price"
-            :min="0"
-            clearable
-            placeholder="Does not change POS prices"
-            style="width: 100%"
-          />
-        </NFormItem>
-        <NFormItem
-          v-if="shopifyFeatureOn && !isCreate && canManageProducts"
-          label="Shopify image"
-        >
-          <NSpace vertical size="small" style="width: 100%">
-            <input
-              type="file"
-              accept="image/jpeg,image/png,image/webp,image/gif"
-              :disabled="shopifyImageBusy"
-              @change="onShopifyImagePick"
+            <NSelect
+              v-model:value="form.tags"
+              :options="tagSelectOptions"
+              multiple
+              filterable
+              tag
+              placeholder="Type a tag and press Enter"
+              :on-create="onCreateTag"
             />
-            <NText depth="3" style="font-size: 12px">
-              Uploads to Shopify only (push/link product first).
-            </NText>
-          </NSpace>
-        </NFormItem>
-        <NFormItem label="Low-stock threshold">
-          <NInputNumber v-model:value="form.low_stock_threshold" :min="0" :precision="0" style="width: 100%" />
-        </NFormItem>
-        <NFormItem v-if="!isCreate" label="Active">
-          <NSwitch v-model:value="form.is_active" />
-        </NFormItem>
-      </NForm>
-      <NText depth="3" style="font-size: 12px; display: block; margin-top: 4px">
-        Stock is always in <strong>pieces</strong>. Pack/box sizes only change how POS sells. Default sell unit sets the
-        barcode label price.
-        <template v-if="!isCreate">
-          Set <strong>Stock</strong> to fix on-hand count; use <strong>Add stock</strong> for new purchases.
-        </template>
-      </NText>
+          </NFormItem>
+          <NFormItem
+            label="New category"
+            :class="canManageProducts && tagsDbReady ? undefined : 'span-2'"
+          >
+            <NSpace style="width: 100%" :wrap="false">
+              <NInput v-model:value="newCategoryName" placeholder="New category" style="flex: 1" />
+              <NButton :disabled="!newCategoryName.trim()" @click="addCategory">Add</NButton>
+            </NSpace>
+          </NFormItem>
+          <template v-if="isCreate">
+            <div class="product-form-pair">
+              <NFormItem label="Initial qty (pcs)">
+                <NInputNumber v-model:value="form.initial_qty" :min="0" :precision="0" style="width: 100%" />
+              </NFormItem>
+              <NFormItem label="Purchase / piece (PKR)">
+                <NInputNumber v-model:value="form.purchase_price" :min="0" style="width: 100%" />
+              </NFormItem>
+            </div>
+            <NFormItem
+              v-if="marginPercent(form.selling_price, form.purchase_price) !== null"
+              label="Gross margin"
+            >
+              <span>{{ marginPercent(form.selling_price, form.purchase_price) }}%</span>
+            </NFormItem>
+          </template>
+          <template v-else>
+            <div class="product-form-pair">
+              <NFormItem label="Stock (pcs)">
+                <NInputNumber v-model:value="form.current_stock" :min="0" :precision="0" style="width: 100%" />
+              </NFormItem>
+              <NFormItem label="Add stock (pcs)">
+                <NInputNumber v-model:value="form.add_stock_qty" :min="0" :precision="0" style="width: 100%" />
+              </NFormItem>
+            </div>
+            <div class="product-form-pair">
+              <NFormItem label="Cost / new piece (PKR)">
+                <NInputNumber v-model:value="form.add_stock_unit_cost" :min="0" style="width: 100%" />
+              </NFormItem>
+              <NFormItem label="Avg cost / piece">
+                <NInputNumber v-model:value="form.weighted_avg_cost" :min="0" style="width: 100%" />
+              </NFormItem>
+            </div>
+            <div class="product-form-pair">
+              <NFormItem
+                v-if="marginPercent(form.selling_price, form.weighted_avg_cost) !== null"
+                label="Gross margin"
+              >
+                <span>{{ marginPercent(form.selling_price, form.weighted_avg_cost) }}%</span>
+              </NFormItem>
+              <NFormItem label="Active">
+                <NSwitch v-model:value="form.is_active" />
+              </NFormItem>
+            </div>
+          </template>
+          <div class="product-form-pair">
+            <NFormItem label="Default sell unit">
+              <NSelect v-model:value="form.default_sale_unit" :options="saleUnitSelectOptions" />
+            </NFormItem>
+            <NFormItem label="Piece price (PKR)">
+              <NInputNumber v-model:value="form.piece_selling_price" :min="0" style="width: 100%" />
+            </NFormItem>
+          </div>
+          <div class="product-form-pair">
+            <NFormItem label="Pcs per pack">
+              <NInputNumber v-model:value="form.pieces_per_pack" :min="1" :precision="0" style="width: 100%" />
+            </NFormItem>
+            <NFormItem label="Pack price (PKR)">
+              <NInputNumber v-model:value="form.pack_selling_price" :min="0" style="width: 100%" />
+            </NFormItem>
+          </div>
+          <div class="product-form-pair">
+            <NFormItem label="Pcs per box">
+              <NInputNumber
+                v-model:value="form.pieces_per_box"
+                :min="1"
+                :precision="0"
+                clearable
+                placeholder="Optional"
+                style="width: 100%"
+              />
+            </NFormItem>
+            <NFormItem label="Box price (PKR)">
+              <NInputNumber
+                v-model:value="form.box_selling_price"
+                :min="0"
+                clearable
+                :disabled="!form.pieces_per_box"
+                style="width: 100%"
+              />
+            </NFormItem>
+          </div>
+          <div class="product-form-pair">
+            <NFormItem label="Low-stock threshold">
+              <NInputNumber v-model:value="form.low_stock_threshold" :min="0" :precision="0" style="width: 100%" />
+            </NFormItem>
+            <NFormItem label="Stock breakdown">
+              <NText depth="3" style="font-size: 13px">{{ unitStockHint }}</NText>
+            </NFormItem>
+          </div>
+          <NFormItem
+            v-if="shopifyFeatureOn && !isCreate && canManageProducts"
+            label="Shopify price (PKR)"
+          >
+            <NInputNumber
+              v-model:value="form.shopify_price"
+              :min="0"
+              clearable
+              placeholder="POS prices unchanged"
+              style="width: 100%"
+            />
+          </NFormItem>
+          <NFormItem
+            v-if="shopifyFeatureOn && !isCreate && canManageProducts"
+            label="Shopify image"
+            class="span-2"
+          >
+            <NSpace vertical size="small" style="width: 100%">
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                :disabled="shopifyImageBusy"
+                @change="onShopifyImagePick"
+              />
+              <NText depth="3" style="font-size: 12px">
+                Uploads to Shopify only (push/link product first).
+              </NText>
+            </NSpace>
+          </NFormItem>
+        </NForm>
+        <NText depth="3" class="product-modal-hint">
+          Stock is always in <strong>pieces</strong>. Pack/box sizes only change how POS sells. Default sell unit sets
+          the barcode label price.
+          <template v-if="!isCreate">
+            Set <strong>Stock</strong> to fix on-hand count; use <strong>Add stock</strong> for new purchases.
+          </template>
+        </NText>
+      </div>
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showModal = false">Cancel</NButton>
@@ -1166,13 +1368,45 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
 </template>
 
 <style scoped>
+.products-more-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 16px;
+}
+.product-modal-body {
+  max-height: min(560px, calc(100vh - 180px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 6px;
+  -webkit-overflow-scrolling: touch;
+}
+.product-modal-hint {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
 .product-form-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px 16px;
+  gap: 0 12px;
+  align-items: start;
 }
 .product-form-grid :deep(.n-form-item) {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
+}
+.product-form-grid :deep(.n-form-item-label) {
+  padding-bottom: 2px !important;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.product-form-pair {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+  align-items: start;
 }
 .span-2 {
   grid-column: span 2;
@@ -1182,11 +1416,47 @@ onUnmounted(() => window.removeEventListener("keydown", onProductsKeyDown));
 }
 @media (max-width: 720px) {
   .product-form-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .span-2,
+  .span-3 {
+    grid-column: span 2;
+  }
+}
+@media (max-width: 520px) {
+  .product-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .product-form-pair {
     grid-template-columns: 1fr;
   }
   .span-2,
   .span-3 {
     grid-column: span 1;
   }
+}
+</style>
+
+<!-- Teleported card — clip content so fields never paint outside the white box. -->
+<style>
+.product-modal.n-card {
+  max-height: calc(100vh - 24px) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+.product-modal.n-card .n-card__content {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  padding-bottom: 4px !important;
+}
+.product-modal.n-card .n-card__footer {
+  flex: 0 0 auto !important;
+  border-top: 1px solid var(--n-divider-color, #e5e7eb);
+  padding-top: 12px;
+}
+.product-modal.n-card .n-card__header {
+  flex: 0 0 auto !important;
 }
 </style>

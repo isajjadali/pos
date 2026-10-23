@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, h, watch } from "vue";
+import { ref, onMounted, onUnmounted, computed, h, watch } from "vue";
 import {
   NButton,
   NSpace,
@@ -10,11 +10,16 @@ import {
   NFormItem,
   NText,
   NTag,
+  NDropdown,
+  NButtonGroup,
+  NIcon,
   useMessage,
   useDialog,
 } from "naive-ui";
+import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
+import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import {
   listCategoriesWithCounts,
@@ -23,7 +28,13 @@ import {
   deleteCategory,
   ensureDefaultCategories,
 } from "../services/categories.js";
-import { rowNumberColumn, tableSorter, paginationTotalPrefix } from "../utils/tableColumns.js";
+import {
+  rowNumberColumn,
+  tableSorter,
+  createdAtColumn,
+  paginationTotalPrefix,
+} from "../utils/tableColumns.js";
+import { PRODUCT_CATALOG_UPDATED } from "../services/productCatalog.js";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -46,6 +57,18 @@ const hasActiveFilters = computed(() => Boolean(search.value.trim()));
 function clearFilters() {
   search.value = "";
   page.value = 1;
+}
+
+const categoryActionOptions = computed(() => [
+  {
+    label: "Add default list",
+    key: "seed",
+    disabled: !supabaseConfigured || seeding.value,
+  },
+]);
+
+function onCategoryActionSelect(key) {
+  if (key === "seed") seedDefaults();
 }
 
 const filtered = computed(() => {
@@ -83,6 +106,7 @@ const columns = computed(() => [
         () => (r.product_count === 0 ? "0 — unused" : String(r.product_count ?? 0))
       ),
   },
+  createdAtColumn(),
   {
     title: "",
     key: "actions",
@@ -207,8 +231,10 @@ watch(search, () => {
 });
 
 onMounted(async () => {
+  window.addEventListener(PRODUCT_CATALOG_UPDATED, load);
   await load();
-  // First visit: ensure the store list exists
+  // Seed defaults only when online and the list is still empty (skip offline — slow / noisy).
+  if (!navigator.onLine || rows.value.length > 0) return;
   try {
     const { added } = await ensureDefaultCategories();
     if (added) await load();
@@ -216,42 +242,51 @@ onMounted(async () => {
     /* ignore seed errors on load */
   }
 });
+onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
 </script>
 
 <template>
   <div class="app-page app-page--fill">
     <h1 style="margin-top: 0">Categories</h1>
     <SupabaseRequiredAlert />
+    <OfflinePendingBanner />
     <NText depth="3" style="display: block; margin-bottom: 16px; font-size: 13px">
       Create, rename, and delete product categories. Unused categories can be deleted. Assign them on
       the Products page.
     </NText>
 
-    <NSpace class="app-filter-stack" style="margin-bottom: 12px" wrap>
-      <NInput
-        v-model:value="search"
-        clearable
-        placeholder="Search categories"
-        style="width: 240px"
-      />
-      <ClearFiltersButton :disabled="!hasActiveFilters" @clear="clearFilters" />
-      <NButton :disabled="!supabaseConfigured" :loading="loading" @click="load">Refresh</NButton>
-      <NButton
-        type="primary"
-        :disabled="!supabaseConfigured"
-        @click="openCreate"
-      >
-        Add category
-      </NButton>
-      <NButton
-        secondary
-        :disabled="!supabaseConfigured"
-        :loading="seeding"
-        @click="seedDefaults"
-      >
-        Add default list
-      </NButton>
-    </NSpace>
+    <div class="app-toolbar app-toolbar--tight">
+      <NSpace class="app-filter-stack" align="center" wrap>
+        <NInput
+          v-model:value="search"
+          clearable
+          placeholder="Search categories"
+          style="width: 240px"
+        />
+        <NButtonGroup>
+          <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
+            Add category
+          </NButton>
+          <NDropdown
+            trigger="click"
+            :options="categoryActionOptions"
+            @select="onCategoryActionSelect"
+          >
+            <NButton
+              type="primary"
+              :disabled="!supabaseConfigured"
+              :loading="seeding"
+              aria-label="More category actions"
+              style="padding: 0 10px"
+            >
+              <NIcon :component="ChevronDownOutline" :size="16" />
+            </NButton>
+          </NDropdown>
+        </NButtonGroup>
+        <NButton :disabled="!supabaseConfigured" :loading="loading" @click="load">Refresh</NButton>
+        <ClearFiltersButton v-if="hasActiveFilters" :disabled="false" @clear="clearFilters" />
+      </NSpace>
+    </div>
 
     <div class="app-table-panel">
       <NDataTable

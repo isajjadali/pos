@@ -288,7 +288,7 @@ function confirmDelete(row) {
 onMounted(async () => {
   productCache.hydrateFromStorage();
   if (supabaseConfigured && !activeProducts.value.length) {
-    refreshProductCatalog().catch(() => {});
+    refreshProductCatalog({ force: true }).catch(() => {});
   }
   await load();
 });
