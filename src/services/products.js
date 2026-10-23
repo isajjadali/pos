@@ -15,9 +15,76 @@ import {
 import { useProductCacheStore } from "../stores/productCache.js";
 import { useMetaCacheStore } from "../stores/metaCache.js";
 import { syncProductCatalogAfterWrite } from "../utils/cacheSync.js";
+import { asyncPool } from "../utils/asyncPool.js";
 
 async function syncCatalog() {
   await syncProductCatalogAfterWrite();
+}
+
+const BULK_WRITE_CONCURRENCY = 12;
+
+const BULK_EDIT_FETCH_PAGE = 200;
+
+/**
+ * Full catalog for bulk-edit-all — fetched in small pages to avoid timeouts.
+ * @param {{ activeOnly?: boolean, pageSize?: number, onBatch?: (chunk: object[], meta: { loaded: number, done: boolean }) => void }} opts
+ */
+export async function fetchAllProductsForBulkEdit({
+  activeOnly = true,
+  pageSize = BULK_EDIT_FETCH_PAGE,
+  onBatch = null,
+} = {}) {
+  const size = Math.max(50, Math.min(Number(pageSize) || BULK_EDIT_FETCH_PAGE, 500));
+
+  // No short read-timeout: multi-page fetch of 500+ rows often exceeds the
+  // default 1.5s and was falsely flipping sticky "Offline" on the Products page.
+  return onlineOrOfflineRead(
+    async () => {
+      const sb = requireSupabase();
+      const all = [];
+      let from = 0;
+      for (;;) {
+        let q = sb
+          .from("products")
+          .select(
+            "id, name, external_product_id, sku, barcode, current_stock, weighted_avg_cost, selling_price, pieces_per_pack, pieces_per_box, piece_selling_price, pack_selling_price, box_selling_price, default_sale_unit, vendor_id, category_id, low_stock_threshold, is_active"
+          )
+          .order("name")
+          .range(from, from + size - 1);
+        if (activeOnly) q = q.eq("is_active", true);
+        const { data, error } = await q;
+        if (error) throw error;
+        const chunk = data ?? [];
+        all.push(...chunk);
+        const done = chunk.length < size;
+        if (typeof onBatch === "function" && chunk.length) {
+          onBatch(chunk, { loaded: all.length, done });
+        }
+        if (done) break;
+        from += size;
+      }
+      if (typeof onBatch === "function" && !all.length) {
+        onBatch([], { loaded: 0, done: true });
+      }
+      return all;
+    },
+    () => {
+      const cached = useProductCacheStore().products || [];
+      const list = (activeOnly ? cached.filter((p) => p.is_active !== false) : cached).slice();
+      if (typeof onBatch === "function") {
+        for (let i = 0; i < list.length; i += size) {
+          const chunk = list.slice(i, i + size);
+          onBatch(chunk, {
+            loaded: Math.min(i + chunk.length, list.length),
+            done: i + chunk.length >= list.length,
+          });
+        }
+        if (!list.length) onBatch([], { loaded: 0, done: true });
+      }
+      return list;
+    },
+    { timeoutMs: 0 }
+  );
 }
 
 const PRODUCT_SORT_COLUMNS = new Set([
@@ -186,8 +253,8 @@ export async function previewBulkExternalProductIds(vendorName, rows) {
 export async function createProductsBulk(rows, { vendorId, vendorName, categoryId } = {}) {
   const created = [];
   const errors = [];
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
+  // Parallel batches (not sequential 1-by-1) — each row still needs create RPC + optional stock.
+  await asyncPool(rows, BULK_WRITE_CONCURRENCY, async (row, i) => {
     try {
       const pack = Math.max(1, Math.floor(Number(row.pieces_per_pack) || 1));
       const sale = Number(row.selling_price) || 0;
@@ -214,7 +281,9 @@ export async function createProductsBulk(rows, { vendorId, vendorName, categoryI
     } catch (e) {
       errors.push({ index: i, name: row.name, message: e.message || "Create failed" });
     }
-  }
+  });
+  created.sort((a, b) => a.index - b.index);
+  errors.sort((a, b) => a.index - b.index);
   if (created.length) await syncCatalog();
   return { created, errors };
 }
@@ -344,16 +413,16 @@ export async function updateProductsBulk(rows, { vendorId = undefined, categoryI
   const updated = [];
   const errors = [];
 
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
+  // Parallel batches — product update + optional stock adjust per row, capped concurrency.
+  await asyncPool(rows, BULK_WRITE_CONCURRENCY, async (row, i) => {
     const name = toTitleCase(row.name);
     if (!row.id) {
       errors.push({ index: i, name: name || "—", message: "Missing product id" });
-      continue;
+      return;
     }
     if (!String(name ?? "").trim()) {
       errors.push({ index: i, name: "—", message: "Product name is required" });
-      continue;
+      return;
     }
     try {
       const units = normalizeProductUnitFields(row);
@@ -391,8 +460,10 @@ export async function updateProductsBulk(rows, { vendorId = undefined, categoryI
     } catch (e) {
       errors.push({ index: i, name: name || "—", message: e.message || "Update failed" });
     }
-  }
+  });
 
+  updated.sort((a, b) => a.index - b.index);
+  errors.sort((a, b) => a.index - b.index);
   if (updated.length) await syncCatalog();
   return { updated, errors };
 }

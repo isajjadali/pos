@@ -489,13 +489,17 @@ function close() {
 }
 .bulk-create-head {
   font-size: 12px;
-  font-weight: 600;
-  color: var(--n-text-color-3);
+  font-weight: 650;
+  color: #6b7280;
   position: sticky;
   top: 0;
-  background: var(--n-color);
-  padding-bottom: 4px;
-  z-index: 1;
+  z-index: 2;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 2px;
+  box-shadow: 0 1px 0 #e5e7eb;
 }
 .bulk-col-head {
   display: inline-flex;
@@ -511,15 +515,15 @@ function close() {
   margin: 0;
   border: none;
   background: transparent;
-  color: var(--n-text-color-3);
+  color: #9ca3af;
   cursor: pointer;
   border-radius: 4px;
   line-height: 1;
   flex-shrink: 0;
 }
 .bulk-copy-all:hover {
-  color: var(--n-primary-color);
-  background: var(--n-button-color-2, rgba(0, 0, 0, 0.04));
+  color: #0f766e;
+  background: rgba(15, 118, 110, 0.08);
 }
 .bulk-margin {
   font-size: 12px;

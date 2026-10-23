@@ -83,7 +83,10 @@ export async function onlineOrOfflineWrite(onlineFn, offlineFn, opts = {}) {
     return await offlineFn();
   }
   try {
-    return await withTimeout(Promise.resolve().then(onlineFn), timeoutMs);
+    const run = Promise.resolve().then(onlineFn);
+    // timeoutMs <= 0 or null → no race (long multi-page jobs)
+    if (timeoutMs == null || timeoutMs <= 0) return await run;
+    return await withTimeout(run, timeoutMs);
   } catch (e) {
     if (isLikelyNetworkError(e) || isTimeoutError(e)) {
       markLikelyOffline();
@@ -95,10 +98,11 @@ export async function onlineOrOfflineWrite(onlineFn, offlineFn, opts = {}) {
 
 /**
  * Cached read with a short network timeout so UI stays snappy when the wire is dead.
+ * Pass `timeoutMs: 0` (or null) to disable — needed for multi-page catalog fetches.
  * @template T
  * @param {() => Promise<T>} onlineFn
  * @param {() => Promise<T>|T} offlineFn
- * @param {{ timeoutMs?: number }} [opts]
+ * @param {{ timeoutMs?: number|null }} [opts]
  */
 export async function onlineOrOfflineRead(onlineFn, offlineFn, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 1500;
@@ -106,7 +110,9 @@ export async function onlineOrOfflineRead(onlineFn, offlineFn, opts = {}) {
     return await offlineFn();
   }
   try {
-    return await withTimeout(Promise.resolve().then(onlineFn), timeoutMs);
+    const run = Promise.resolve().then(onlineFn);
+    if (timeoutMs == null || timeoutMs <= 0) return await run;
+    return await withTimeout(run, timeoutMs);
   } catch (e) {
     if (isLikelyNetworkError(e) || isTimeoutError(e)) {
       markLikelyOffline();

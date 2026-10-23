@@ -44,6 +44,7 @@ import {
   snapshotProductsForUndo,
   restoreProductsFromSnapshots,
   nextExternalProductId,
+  fetchAllProductsForBulkEdit,
 } from "../services/products.js";
 import { useLastActionUndo } from "../composables/useLastActionUndo.js";
 import { receiveStock, setProductStock } from "../services/inventory.js";
@@ -178,9 +179,14 @@ const productActionOptions = computed(() => {
     { label: "Bulk create", key: "bulk-create", disabled: !ready },
     { type: "divider", key: "d1" },
     {
-      label: n ? `Bulk edit (${n})` : "Bulk edit",
+      label: n ? `Bulk edit selected (${n})` : "Bulk edit selected",
       key: "bulk-edit",
       disabled: !ready || !n,
+    },
+    {
+      label: bulkEditLoading.value ? "Loading all…" : "Bulk edit all",
+      key: "bulk-edit-all",
+      disabled: !ready || bulkEditLoading.value,
     },
     {
       label: "Deactivate selected",
@@ -221,6 +227,9 @@ function onProductActionSelect(key) {
       break;
     case "bulk-edit":
       openBulkEdit();
+      break;
+    case "bulk-edit-all":
+      openBulkEditAll();
       break;
     case "deactivate":
       confirmBulkDeactivate();
@@ -282,23 +291,57 @@ const showBulkEdit = ref(false);
 const showBulkShopifyImages = ref(false);
 const shopifyImageBusy = ref(false);
 const shopifyPriceBusy = ref(false);
+const bulkEditLoading = ref(false);
+const bulkEditProducts = ref([]);
 const editing = ref(null);
-
-const selectedProductsForBulkEdit = computed(() => {
-  const keys = new Set(checkedRowKeys.value);
-  return rows.value.filter((r) => keys.has(r.id));
-});
 
 function openBulkEdit() {
   if (!checkedRowKeys.value.length) {
-    message.warning("Select at least one product to edit");
+    message.warning("Select at least one product, or use Bulk edit all");
     return;
   }
+  const keys = new Set(checkedRowKeys.value);
+  bulkEditProducts.value = rows.value.filter((r) => keys.has(r.id));
   showBulkEdit.value = true;
+}
+
+async function openBulkEditAll() {
+  if (!supabaseConfigured) return;
+  // Clear stale sticky-offline from a prior short-timeout false positive.
+  if (typeof navigator !== "undefined" && navigator.onLine) {
+    clearForcedOffline();
+  }
+  // Open modal immediately so the user sees progress while batches load.
+  bulkEditProducts.value = [];
+  bulkEditLoading.value = true;
+  showBulkEdit.value = true;
+  try {
+    const all = await fetchAllProductsForBulkEdit({
+      activeOnly: activeOnly.value,
+      pageSize: 200,
+      onBatch: (chunk) => {
+        if (!showBulkEdit.value || !chunk?.length) return;
+        bulkEditProducts.value = bulkEditProducts.value.concat(chunk);
+      },
+    });
+    if (!showBulkEdit.value) return;
+    if (!all.length) {
+      message.warning("No products to edit");
+      showBulkEdit.value = false;
+      return;
+    }
+    message.success(`Loaded ${all.length} product(s)`);
+  } catch (e) {
+    message.error(e.message || "Failed to load products");
+    if (!bulkEditProducts.value.length) showBulkEdit.value = false;
+  } finally {
+    bulkEditLoading.value = false;
+  }
 }
 
 async function onBulkEditUpdated() {
   checkedRowKeys.value = [];
+  bulkEditProducts.value = [];
   await reloadTableAndCatalog();
 }
 
@@ -1354,7 +1397,8 @@ onUnmounted(() => {
     />
     <ProductBulkEditModal
       v-model:show="showBulkEdit"
-      :products="selectedProductsForBulkEdit"
+      :products="bulkEditProducts"
+      :loading="bulkEditLoading"
       :vendor-options="vendorOptions"
       :category-options="categoryOptions"
       @updated="onBulkEditUpdated"
