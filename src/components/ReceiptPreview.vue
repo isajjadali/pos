@@ -159,7 +159,7 @@ const footerStyle = computed(() => ({
   margin-top: 4px;
 }
 .footer {
-  margin-top: 12px;
+  margin-top: 18px;
   text-align: center;
   white-space: pre-wrap;
   color: #374151;

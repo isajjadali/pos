@@ -15,10 +15,17 @@ function money(value) {
   return `Rs ${rounded % 1 === 0 ? String(rounded) : rounded.toFixed(2)}`;
 }
 
+/** Map common Unicode → ASCII so thermal (CP437/ASCII) does not print "?" for dashes etc. */
 function ascii(str) {
   return String(str ?? "")
+    .replace(/[\u2018\u2019\u201A\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u2033]/g, '"')
+    .replace(/[\u2013\u2014\u2015\u2212]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/[\u00A0\u202F\u2007]/g, " ")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
     .normalize("NFKD")
-    .replace(/[^\x20-\x7E]/g, "?");
+    .replace(/[^\x20-\x7E]/g, "");
 }
 
 function padLine(left, right, cols) {
@@ -46,6 +53,38 @@ function wrapName(name, cols) {
   return lines;
 }
 
+/** Prefer word boundaries so brand titles don't split mid-word. */
+function wrapWords(name, cols) {
+  const t = ascii(name).trim();
+  if (!t) return [""];
+  if (t.length <= cols) return [t];
+  const words = t.split(/\s+/);
+  const lines = [];
+  let cur = "";
+  for (const w of words) {
+    if (!cur) {
+      if (w.length <= cols) {
+        cur = w;
+      } else {
+        for (let i = 0; i < w.length; i += cols) lines.push(w.slice(i, i + cols));
+      }
+      continue;
+    }
+    if (`${cur} ${w}`.length <= cols) {
+      cur = `${cur} ${w}`;
+    } else {
+      lines.push(cur);
+      if (w.length <= cols) cur = w;
+      else {
+        cur = "";
+        for (let i = 0; i < w.length; i += cols) lines.push(w.slice(i, i + cols));
+      }
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines.length ? lines : [t.slice(0, cols)];
+}
+
 /** Map px font size → ESC/POS GS ! n. Body default 13 → 1×. */
 function escPosBodySize(fontSize) {
   const fs = Number(fontSize) || 13;
@@ -54,11 +93,9 @@ function escPosBodySize(fontSize) {
   return 0x11; // double width + height
 }
 
-/** Title default 17 → double width+height (previous title look). */
-function escPosTitleSize(fontSize) {
-  const fs = Number(fontSize) || 17;
-  if (fs <= 14) return 0x01;
-  return 0x11;
+/** Effective column count when GS ! size has double-width bit. */
+function colsForSize(baseCols, sizeByte) {
+  return sizeByte & 0x10 ? Math.floor(baseCols / 2) : baseCols;
 }
 
 function escPosFooterSize(fontSize) {
@@ -112,8 +149,6 @@ export function buildPlainTextReceipt(sale, items, settingsInput, { paperMm = 80
 export function buildEscPosReceipt(sale, items, settingsInput, { paperMm = 80 } = {}) {
   const vm = buildReceiptViewModel(sale, items, settingsInput);
   const cols = paperMm <= 58 ? COLS_58 : COLS_3IN;
-  /** Same blank lines above header and below footer (visual balance) */
-  const EDGE_LINES = 1;
   const out = [];
 
   const push = (...bytes) => {
@@ -132,43 +167,43 @@ export function buildEscPosReceipt(sale, items, settingsInput, { paperMm = 80 } 
     for (let i = 0; i < n; i++) lf();
   };
 
-  // Init
+  // Init — start printing immediately (minimal top waste)
   push(0x1b, 0x40);
   push(0x1d, 0x7c, 0x0e); // darker density
-  // Thermal printers only have Font A/B; CSS font choice ≈ A. Size maps from settings.
+  push(0x1b, 0x33, 0x2c); // ESC 3 n — tighter line spacing (~44 dots)
   const bodySize = escPosBodySize(vm.settings.receipt_font_size);
-  const titleSize = escPosTitleSize(vm.settings.receipt_title_font_size);
   const footerSize = escPosFooterSize(vm.settings.receipt_footer_font_size);
-  push(0x1b, 0x4d, 0x00); // Font A (12×24) — not compressed Font B
+  push(0x1b, 0x4d, 0x00); // Font A (12×24)
   push(0x1b, 0x20, 0x00);
   push(0x1d, 0x21, bodySize);
 
-  blank(EDGE_LINES);
-
-  // Title: split "Discount World by WABz" → big brand + subtitle (less cramped)
+  // Title: split "Discount World by WABz" → big brand + subtitle (match UI)
   const rawName = String(vm.storeName || "").trim();
   const byMatch = rawName.match(/^(.*?)\s+by\s+(.+)$/i);
-  const titleMain = (byMatch ? byMatch[1] : rawName).toUpperCase();
-  const titleSub = byMatch ? `by ${byMatch[2]}` : "";
+  const titleMain = ascii((byMatch ? byMatch[1] : rawName).toUpperCase());
+  const titleSub = byMatch ? ascii(`by ${byMatch[2]}`) : "";
+  // 0x11 = double width+height (~24 cols on 80mm). "DISCOUNT WORLD" (14) fits on one line.
+  const doubleCols = colsForSize(cols, 0x11);
 
   push(0x1b, 0x61, 0x01); // center
-  push(0x1b, 0x4d, 0x00); // Font A
+  push(0x1b, 0x4d, 0x00);
   push(0x1b, 0x45, 0x01); // bold
-  push(0x1b, 0x20, 0x02); // slight letter spacing (less compressed)
-  push(0x1d, 0x21, titleSize);
-  line(titleMain);
+  push(0x1b, 0x20, 0x00); // no letter-spacing (extra spacing was wrapping the title)
+  push(0x1d, 0x21, 0x11);
+  for (const tl of wrapWords(titleMain, doubleCols)) line(tl);
   push(0x1d, 0x21, bodySize);
-  push(0x1b, 0x20, 0x00);
 
   if (titleSub) {
     push(0x1b, 0x45, 0x01);
-    push(0x1d, 0x21, titleSize === 0x11 ? 0x01 : bodySize);
-    line(titleSub);
+    push(0x1d, 0x21, 0x00); // subtitle smaller — matches UI
+    line(titleSub.slice(0, cols));
     push(0x1d, 0x21, bodySize);
   }
   push(0x1b, 0x45, 0x00);
 
-  if (vm.headerLine) line(vm.headerLine);
+  if (vm.headerLine) {
+    for (const hl of wrapName(vm.headerLine, cols)) line(center(hl, cols));
+  }
   push(0x1b, 0x61, 0x00);
 
   line(vm.reference);
@@ -176,13 +211,21 @@ export function buildEscPosReceipt(sale, items, settingsInput, { paperMm = 80 } 
   line(dashLine(cols));
 
   for (const item of vm.lines) {
-    for (const nl of wrapName(item.name, cols)) {
+    // Match UI: "Name · qty x price" + total on one logical block
+    const qtyBit =
+      item.qty > 1
+        ? ` - ${item.qty} x ${Math.round(Number(item.unitPrice) || 0)}`
+        : "";
+    const nameWithQty = `${item.name}${qtyBit}`;
+    const totalStr = money(item.lineTotal);
+    const nameBudget = Math.max(8, cols - totalStr.length - 1);
+    const nameLines = wrapName(nameWithQty, nameBudget);
+    nameLines.forEach((nl, i) => {
       push(0x1b, 0x45, 0x01);
-      line(nl);
+      if (i === nameLines.length - 1) line(padLine(nl, totalStr, cols));
+      else line(nl);
       push(0x1b, 0x45, 0x00);
-    }
-    const left = `${item.qty} x ${Math.round(Number(item.unitPrice) || 0)}`;
-    line(padLine(left, money(item.lineTotal), cols));
+    });
   }
 
   line(dashLine(cols));
@@ -201,22 +244,22 @@ export function buildEscPosReceipt(sale, items, settingsInput, { paperMm = 80 } 
   }
 
   if (vm.footer) {
+    blank(2); // breathing room after TOTAL / payment before thank-you
     push(0x1d, 0x21, footerSize);
+    const footerCols = colsForSize(cols, footerSize);
     for (const fl of String(vm.footer).split(/\r?\n/)) {
       if (!fl.trim()) continue;
       push(0x1b, 0x61, 0x01);
-      line(fl);
+      for (const part of wrapName(fl, footerCols)) line(center(part, footerCols));
       push(0x1b, 0x61, 0x00);
     }
     push(0x1d, 0x21, bodySize);
   }
 
-  // Match top margin
-  blank(EDGE_LINES);
-
-  // Feed past cutter, then partial cut — so bottom lines are not cut off
-  // GS V 66 n = feed n motion units, then cut
-  push(0x1d, 0x56, 0x42, 0x60);
+  // Minimal feed past cutter — less blank above the *next* receipt's title
+  blank(1);
+  // GS V 66 n = feed n motion units, then cut (keep n small to save paper)
+  push(0x1d, 0x56, 0x42, 0x18);
 
   return new Uint8Array(out);
 }

@@ -122,7 +122,7 @@ export function receiptPaperStyle(settingsInput) {
     lineHeight: "1.45",
     color: "#111827",
     background: "#fff",
-    padding: "16px 14px",
+    padding: "10px 12px 14px",
     border: "1px dashed #9ca3af",
     borderRadius: "8px",
     boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
