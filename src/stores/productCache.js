@@ -4,6 +4,7 @@ import { requireSupabase, supabaseConfigured } from "../lib/supabase.js";
 import { notifyProductCatalogUpdated } from "../utils/catalogSync.js";
 import { vendorInitialsPrefix } from "../utils/titleCase.js";
 import { getEffectiveOnline } from "../services/offlineGuard.js";
+import { matchesSearchFields } from "../utils/textSearch.js";
 
 const STORAGE_KEY = "dw_product_catalog_v2";
 
@@ -156,16 +157,12 @@ export const useProductCacheStore = defineStore("productCache", () => {
   }
 
   function searchForPos(term, limit = 30) {
-    const q = String(term ?? "").trim().toLowerCase();
+    const q = String(term ?? "").trim();
     if (!q) return [];
     return activeProducts.value
-      .filter((p) => {
-        const name = (p.name ?? "").toLowerCase();
-        const barcode = (p.barcode ?? "").toLowerCase();
-        const sku = (p.sku ?? "").toLowerCase();
-        const ext = (p.external_product_id ?? "").toLowerCase();
-        return name.includes(q) || barcode.includes(q) || sku.includes(q) || ext.includes(q);
-      })
+      .filter((p) =>
+        matchesSearchFields([p.name, p.barcode, p.sku, p.external_product_id], q)
+      )
       .slice(0, limit);
   }
 

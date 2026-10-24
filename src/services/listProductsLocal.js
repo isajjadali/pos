@@ -1,6 +1,7 @@
 import { toRaw } from "vue";
 import { useProductCacheStore } from "../stores/productCache.js";
 import { useMetaCacheStore } from "../stores/metaCache.js";
+import { matchesSearchFields } from "../utils/textSearch.js";
 
 /**
  * Offline / cache-backed product listing (same shape as listProducts).
@@ -91,19 +92,11 @@ export function listProductsLocal({
     else if (uf === "multi" && !(Number(p.pieces_per_pack) > 1 || p.pieces_per_box != null))
       continue;
 
-    if (term) {
-      const name = String(p.name || "").toLowerCase();
-      const sku = String(p.sku || "").toLowerCase();
-      const barcode = String(p.barcode || "").toLowerCase();
-      const ext = String(p.external_product_id || "").toLowerCase();
-      if (
-        !name.includes(term) &&
-        !sku.includes(term) &&
-        !barcode.includes(term) &&
-        !ext.includes(term)
-      ) {
-        continue;
-      }
+    if (
+      term &&
+      !matchesSearchFields([p.name, p.sku, p.barcode, p.external_product_id], term)
+    ) {
+      continue;
     }
 
     filtered.push(p);

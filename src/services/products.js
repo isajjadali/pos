@@ -16,6 +16,7 @@ import { useProductCacheStore } from "../stores/productCache.js";
 import { useMetaCacheStore } from "../stores/metaCache.js";
 import { syncProductCatalogAfterWrite } from "../utils/cacheSync.js";
 import { asyncPool } from "../utils/asyncPool.js";
+import { postgrestIlikeOr } from "../utils/textSearch.js";
 
 async function syncCatalog() {
   await syncProductCatalogAfterWrite();
@@ -165,9 +166,11 @@ async function listProductsOnline({
 
   const term = search.trim();
   if (term) {
-    query = query.or(
-      `name.ilike.%${term}%,sku.ilike.%${term}%,barcode.ilike.%${term}%,external_product_id.ilike.%${term}%`
+    const orFilter = postgrestIlikeOr(
+      ["name", "sku", "barcode", "external_product_id"],
+      term
     );
+    if (orFilter) query = query.or(orFilter);
   }
   if (vendorList.length === 1) query = query.eq("vendor_id", vendorList[0]);
   else if (vendorList.length > 1) query = query.in("vendor_id", vendorList);

@@ -8,6 +8,7 @@ import {
 } from "./adminOfflineApply.js";
 import { useMetaCacheStore } from "../stores/metaCache.js";
 import { countProductsByField } from "../utils/localCatalogCounts.js";
+import { matchesSearch } from "../utils/textSearch.js";
 
 export async function listVendors({ search = "", activeOnly = false, page = 1, pageSize = 20 } = {}) {
   const res = await listVendorsWithProductCounts({
@@ -40,8 +41,7 @@ function listVendorsLocal({
     product_count: countMap[v.id] || 0,
   }));
   if (search.trim()) {
-    const q = search.trim().toLowerCase();
-    enriched = enriched.filter((v) => String(v.name || "").toLowerCase().includes(q));
+    enriched = enriched.filter((v) => matchesSearch(v.name, search));
   }
   if (activeOnly) enriched = enriched.filter((v) => v.is_active !== false);
   if (productFilter === "none") enriched = enriched.filter((v) => v.product_count === 0);

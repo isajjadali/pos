@@ -46,6 +46,7 @@ import {
   productMatchesUnitFilter,
   resolveSaleUnit,
 } from "../utils/saleUnits.js";
+import { matchesSearchFields } from "../utils/textSearch.js";
 
 const RANGES_LS = "dw_price_group_ranges_v1";
 
@@ -199,8 +200,7 @@ const filteredProducts = computed(() => {
     if (vendorSet && !vendorSet.has(String(p.vendor_id))) return false;
     if (!productMatchesUnitFilter(p, unitFilter.value)) return false;
     if (!q) return true;
-    const hay = `${p.name ?? ""} ${p.external_product_id ?? ""}`.toLowerCase();
-    return hay.includes(q);
+    return matchesSearchFields([p.name, p.external_product_id, p.barcode, p.sku], search.value);
   });
 });
 

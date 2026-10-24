@@ -5,6 +5,7 @@ import {
   searchProductsCached,
 } from "./productCatalog.js";
 import { syncProductCatalogAfterWrite } from "../utils/cacheSync.js";
+import { postgrestIlikeOr } from "../utils/textSearch.js";
 
 export async function listOpenOrders() {
   const sb = requireSupabase();
@@ -163,17 +164,20 @@ export async function searchProductsForPos(term) {
   if (isProductCatalogReady()) {
     return searchProductsCached(q);
   }
+  const orFilter = postgrestIlikeOr(
+    ["name", "barcode", "sku", "external_product_id"],
+    q
+  );
   const sb = requireSupabase();
-  const { data, error } = await sb
+  let query = sb
     .from("products")
     .select(
       "id, name, barcode, sku, selling_price, current_stock, pieces_per_pack, pieces_per_box, piece_selling_price, pack_selling_price, box_selling_price, default_sale_unit"
     )
     .eq("is_active", true)
-    .or(
-      `name.ilike.%${q}%,barcode.ilike.%${q}%,sku.ilike.%${q}%,external_product_id.ilike.%${q}%`
-    )
     .limit(20);
+  if (orFilter) query = query.or(orFilter);
+  const { data, error } = await query;
   if (error) throw error;
   return data ?? [];
 }

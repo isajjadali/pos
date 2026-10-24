@@ -1,5 +1,6 @@
 import { requireSupabase } from "../lib/supabase.js";
 import { syncProductCatalogAfterWrite } from "../utils/cacheSync.js";
+import { postgrestIlikeOr } from "../utils/textSearch.js";
 
 export async function listProductsForPrinting({ search = "" } = {}) {
   const sb = requireSupabase();
@@ -10,9 +11,8 @@ export async function listProductsForPrinting({ search = "" } = {}) {
     )
     .eq("is_active", true)
     .order("name");
-  if (search.trim()) {
-    q = q.or(`name.ilike.%${search.trim()}%,barcode.ilike.%${search.trim()}%`);
-  }
+  const orFilter = postgrestIlikeOr(["name", "barcode", "sku", "external_product_id"], search);
+  if (orFilter) q = q.or(orFilter);
   // Client paginates / filters in the barcode print UI
   const { data, error } = await q.limit(2000);
   if (error) throw error;

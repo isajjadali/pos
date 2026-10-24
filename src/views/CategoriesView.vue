@@ -35,6 +35,7 @@ import {
   paginationTotalPrefix,
 } from "../utils/tableColumns.js";
 import { PRODUCT_CATALOG_UPDATED } from "../services/productCatalog.js";
+import { matchesSearch } from "../utils/textSearch.js";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -72,9 +73,8 @@ function onCategoryActionSelect(key) {
 }
 
 const filtered = computed(() => {
-  const q = search.value.trim().toLowerCase();
-  if (!q) return rows.value;
-  return rows.value.filter((r) => (r.name || "").toLowerCase().includes(q));
+  if (!search.value.trim()) return rows.value;
+  return rows.value.filter((r) => matchesSearch(r.name, search.value));
 });
 
 const paged = computed(() => {

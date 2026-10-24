@@ -22,6 +22,7 @@ import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import ReceiptPreview from "../components/ReceiptPreview.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { formatPkr } from "../utils/format.js";
+import { matchesSearchFields } from "../utils/textSearch.js";
 import {
   searchProductsForPos,
   searchProductsForPosLocal,
@@ -151,14 +152,8 @@ const lookupLoading = ref(false);
 let lookupTimer;
 
 function lineMatchesFilter(line, q) {
-  const term = String(q ?? "").trim().toLowerCase();
-  if (!term) return true;
   const p = line.products;
-  const hay = [p?.name, p?.sku, p?.barcode, line.product_id]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return hay.includes(term);
+  return matchesSearchFields([p?.name, p?.sku, p?.barcode, line.product_id], q);
 }
 
 const displayItems = computed(() => {

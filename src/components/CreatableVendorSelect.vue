@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick } from "vue";
 import { NSelect, useMessage } from "naive-ui";
 import { createVendor } from "../services/vendors.js";
 import { toTitleCase } from "../utils/titleCase.js";
+import { naiveSelectSubstringFilter } from "../utils/textSearch.js";
 
 const CREATE_PREFIX = "__create__:";
 
@@ -138,6 +139,7 @@ function onKeydown(e) {
       :clearable="clearable"
       :disabled="disabled || creating"
       filterable
+      :filter="naiveSelectSubstringFilter"
       :style="style"
       :show-checkmark="false"
       @search="onSearch"

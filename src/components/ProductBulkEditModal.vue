@@ -18,6 +18,7 @@ import { ArrowDownOutline } from "@vicons/ionicons5";
 import { formatPkr, marginPercent } from "../utils/format.js";
 import { fitNameColumnWidth } from "../utils/tableColumns.js";
 import { updateProductsBulk } from "../services/products.js";
+import { matchesSearchFields, naiveSelectSubstringFilter } from "../utils/textSearch.js";
 import CreatableVendorSelect from "./CreatableVendorSelect.vue";
 
 const props = defineProps({
@@ -55,23 +56,16 @@ const gridScrollTop = ref(0);
 const gridViewportH = ref(480);
 let scrollRaf = 0;
 
-function rowSearchHay(row) {
-  return [row.name, row.barcode, row.sku, row.external_product_id]
-    .map((v) => String(v ?? "").toLowerCase())
-    .join("\0");
-}
-
-function touchSearchHay(row) {
-  row._q = rowSearchHay(row);
-  return row;
-}
-
-/** All matches (or all rows). Indices are into `draftRows`. */
+/** All matches (or all rows). Indices are into `draftRows`. Substring match. */
 const visibleDraftRows = computed(() => {
-  const q = rowSearch.value.trim().toLowerCase();
   const mapped = draftRows.value.map((row, index) => ({ row, index }));
-  if (!q) return mapped;
-  return mapped.filter(({ row }) => (row._q || rowSearchHay(row)).includes(q));
+  if (!rowSearch.value.trim()) return mapped;
+  return mapped.filter(({ row }) =>
+    matchesSearchFields(
+      [row.name, row.barcode, row.sku, row.external_product_id],
+      rowSearch.value
+    )
+  );
 });
 
 const windowedDraft = computed(() => {
@@ -116,10 +110,6 @@ watch(rowSearch, () => {
 
 function markEdit(field, rowIndex) {
   lastEdit.value = { field, rowIndex };
-  const row = draftRows.value[rowIndex];
-  if (row && (field === "name" || field === "barcode" || field === "sku" || field === "external_product_id")) {
-    touchSearchHay(row);
-  }
 }
 
 function copyFieldToAll(field) {
@@ -149,7 +139,7 @@ function productToDraft(p) {
   const selling_price = Number(p.selling_price) || 0;
   const pieces_per_pack = Math.max(1, Math.floor(Number(p.pieces_per_pack) || 1));
   const barcode = p.barcode || "";
-  return touchSearchHay({
+  return {
     id: p.id,
     external_product_id,
     name,
@@ -179,7 +169,7 @@ function productToDraft(p) {
       pieces_per_pack,
       barcode,
     },
-  });
+  };
 }
 
 function isRowDirty(row) {
@@ -468,6 +458,7 @@ function close() {
           placeholder="Category (optional — apply to all)"
           clearable
           filterable
+          :filter="naiveSelectSubstringFilter"
           style="width: 240px"
         />
         <NText depth="3" style="font-size: 12px">
