@@ -13,11 +13,14 @@ import {
   NDropdown,
   NButtonGroup,
   NIcon,
+  NDrawer,
+  NDrawerContent,
   useMessage,
   useDialog,
 } from "naive-ui";
 import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
+import CreatedDateFilter from "../components/CreatedDateFilter.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
@@ -36,6 +39,11 @@ import {
 } from "../utils/tableColumns.js";
 import { PRODUCT_CATALOG_UPDATED } from "../services/productCatalog.js";
 import { matchesSearch } from "../utils/textSearch.js";
+import {
+  dateRangeFilterActive,
+  isTimestampInRange,
+  resolveDateRange,
+} from "../utils/dateRange.js";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -53,10 +61,26 @@ const editName = ref("");
 const saving = ref(false);
 const newName = ref("");
 
-const hasActiveFilters = computed(() => Boolean(search.value.trim()));
+const createdRangePreset = ref("all");
+const createdFrom = ref(null);
+const createdTo = ref(null);
+const showMoreFilters = ref(false);
+
+const moreFiltersCount = computed(() =>
+  dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value) ? 1 : 0
+);
+
+const hasActiveFilters = computed(
+  () =>
+    Boolean(search.value.trim()) ||
+    dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
+);
 
 function clearFilters() {
   search.value = "";
+  createdRangePreset.value = "all";
+  createdFrom.value = null;
+  createdTo.value = null;
   page.value = 1;
 }
 
@@ -73,8 +97,12 @@ function onCategoryActionSelect(key) {
 }
 
 const filtered = computed(() => {
-  if (!search.value.trim()) return rows.value;
-  return rows.value.filter((r) => matchesSearch(r.name, search.value));
+  const range = resolveDateRange(createdRangePreset.value, createdFrom.value, createdTo.value);
+  return rows.value.filter((r) => {
+    if (search.value.trim() && !matchesSearch(r.name, search.value)) return false;
+    if (!isTimestampInRange(r.created_at, range)) return false;
+    return true;
+  });
 });
 
 const paged = computed(() => {
@@ -106,6 +134,17 @@ const columns = computed(() => [
         () => (r.product_count === 0 ? "0 — unused" : String(r.product_count ?? 0))
       ),
   },
+  {
+    title: "Status",
+    key: "is_active",
+    width: 100,
+    render: (r) =>
+      h(
+        NTag,
+        { size: "small", type: r.is_active !== false ? "success" : "default" },
+        () => (r.is_active !== false ? "Active" : "Inactive")
+      ),
+  },
   createdAtColumn(),
   {
     title: "",
@@ -118,17 +157,18 @@ const columns = computed(() => [
           { size: "tiny", secondary: true, onClick: () => openEdit(row) },
           () => "Edit"
         ),
-        h(
-          NButton,
-          {
-            size: "tiny",
-            type: "error",
-            secondary: true,
-            disabled: (row.product_count || 0) > 0,
-            onClick: () => confirmDelete(row),
-          },
-          () => "Delete"
-        ),
+        row.is_active !== false
+          ? h(
+              NButton,
+              {
+                size: "tiny",
+                type: "error",
+                secondary: true,
+                onClick: () => confirmDelete(row),
+              },
+              () => "Delete"
+            )
+          : null,
       ]),
   },
 ]);
@@ -185,13 +225,13 @@ async function saveModal() {
 function confirmDelete(row) {
   dialog.warning({
     title: "Delete category?",
-    content: `Delete “${row.name}”? Only unused categories can be deleted.`,
+    content: `“${row.name}” will be soft-deleted (hidden from pickers). Linked products keep this category.`,
     positiveText: "Delete",
     negativeText: "Cancel",
     onPositiveClick: async () => {
       try {
         await deleteCategory(row.id);
-        message.success("Category deleted");
+        message.success("Category soft-deleted");
         await load();
       } catch (e) {
         message.error(e.message || "Delete failed");
@@ -226,7 +266,7 @@ function onPageSizeChange(s) {
   page.value = 1;
 }
 
-watch(search, () => {
+watch([search, createdRangePreset, createdFrom, createdTo], () => {
   page.value = 1;
 });
 
@@ -251,7 +291,7 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
     <SupabaseRequiredAlert />
     <OfflinePendingBanner />
     <NText depth="3" style="display: block; margin-bottom: 16px; font-size: 13px">
-      Create, rename, and delete product categories. Unused categories can be deleted. Assign them on
+      Create, rename, and soft-delete product categories (inactive stay in history). Assign them on
       the Products page.
     </NText>
 
@@ -263,6 +303,9 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
           placeholder="Search categories"
           style="width: 240px"
         />
+        <NButton :type="moreFiltersCount ? 'warning' : 'default'" @click="showMoreFilters = true">
+          More filters{{ moreFiltersCount ? ` (${moreFiltersCount})` : "" }}
+        </NButton>
         <NButtonGroup>
           <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
             Add category
@@ -287,6 +330,19 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
         <ClearFiltersButton v-if="hasActiveFilters" :disabled="false" @clear="clearFilters" />
       </NSpace>
     </div>
+
+    <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
+      <NDrawerContent title="More filters" closable :native-scrollbar="false">
+        <div class="more-filters">
+          <CreatedDateFilter
+            v-model:preset="createdRangePreset"
+            v-model:from="createdFrom"
+            v-model:to="createdTo"
+            stacked
+          />
+        </div>
+      </NDrawerContent>
+    </NDrawer>
 
     <div class="app-table-panel">
       <NDataTable

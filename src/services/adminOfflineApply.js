@@ -6,6 +6,7 @@ import { newLocalId } from "./offlineGuard.js";
 import { toTitleCase } from "../utils/titleCase.js";
 import { normalizeProductUnitFields } from "../utils/saleUnits.js";
 import { notifyProductCatalogUpdated } from "../utils/catalogSync.js";
+import { generateInternalBarcode } from "../utils/internalBarcode.js";
 
 function enqueue(type, payload, label) {
   return useAdminOutboxStore().enqueue({ type, payload, label });
@@ -48,13 +49,15 @@ export function offlineUpdateVendor(id, payload) {
 
 export function offlineDeleteVendor(id) {
   const meta = useMetaCacheStore();
-  const products = toRaw(useProductCacheStore().products) || [];
-  const linked = products.reduce((n, p) => n + (p.vendor_id === id ? 1 : 0), 0);
-  if (linked > 0) throw new Error(`Cannot delete: ${linked} product(s) still use this vendor`);
-  const name = meta.vendors.find((v) => v.id === id)?.name || id;
-  meta.removeVendor(id);
-  enqueue("vendor.delete", { id }, `Vendor delete: ${name}`);
-  return { ok: true, deleted: true };
+  const existing = meta.vendors.find((v) => v.id === id);
+  const name = existing?.name || id;
+  meta.upsertVendor({
+    ...(existing || { id }),
+    is_active: false,
+    updated_at: new Date().toISOString(),
+  });
+  enqueue("vendor.delete", { id }, `Vendor soft-delete: ${name}`);
+  return { ok: true, deleted: true, soft: true };
 }
 
 export function offlineCreateCategory(name) {
@@ -76,13 +79,15 @@ export function offlineUpdateCategory(id, { name } = {}) {
 }
 
 export function offlineDeleteCategory(id) {
-  const products = toRaw(useProductCacheStore().products) || [];
-  const linked = products.reduce((n, p) => n + (p.category_id === id ? 1 : 0), 0);
-  if (linked > 0) throw new Error(`Cannot delete: ${linked} product(s) still use this category`);
-  const name = useMetaCacheStore().categories.find((c) => c.id === id)?.name || id;
-  useMetaCacheStore().removeCategory(id);
-  enqueue("category.delete", { id }, `Category delete: ${name}`);
-  return { ok: true };
+  const meta = useMetaCacheStore();
+  const existing = meta.categories.find((c) => c.id === id);
+  const name = existing?.name || id;
+  meta.upsertCategory({
+    ...(existing || { id }),
+    is_active: false,
+  });
+  enqueue("category.delete", { id }, `Category soft-delete: ${name}`);
+  return { ok: true, soft: true };
 }
 
 export function offlineCreateProduct(payload) {
@@ -100,12 +105,13 @@ export function offlineCreateProduct(payload) {
   const id = newLocalId("local");
   const qty = Math.max(0, Math.floor(Number(payload.initial_qty) || 0));
   const cost = Number(payload.purchase_price) || 0;
+  const givenBarcode = String(payload.barcode ?? "").trim() || null;
   const row = {
     id,
     name: toTitleCase(payload.name),
     external_product_id: externalId,
     sku: payload.sku?.trim() || null,
-    barcode: payload.barcode?.trim() || null,
+    barcode: givenBarcode || generateInternalBarcode(cost),
     category_id: payload.category_id || null,
     vendor_id: payload.vendor_id || null,
     selling_price: units.selling_price,
@@ -182,11 +188,15 @@ export function offlineDeactivateProduct(id) {
   return cache.products.find((p) => p.id === id);
 }
 
+/** Soft-delete offline — keep row in cache with is_active=false (barcode unchanged). */
 export function offlineDeleteProductsBulk(ids) {
   const unique = [...new Set((ids || []).filter(Boolean))];
-  useProductCacheStore().removeProducts(unique);
+  const cache = useProductCacheStore();
+  for (const id of unique) {
+    cache.patchProduct(id, { is_active: false, updated_at: new Date().toISOString() });
+  }
   notifyProductCatalogUpdated();
-  enqueue("product.deleteBulk", { ids: unique }, `Delete ${unique.length} product(s)`);
+  enqueue("product.deleteBulk", { ids: unique }, `Soft-delete ${unique.length} product(s)`);
   return { deleted: unique.length, failed: [] };
 }
 

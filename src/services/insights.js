@@ -1,4 +1,10 @@
 import { requireSupabase } from "../lib/supabase.js";
+import { resolveDateRange } from "../utils/dateRange.js";
+
+/** @deprecated prefer resolveDateRange from utils/dateRange.js */
+export function resolveInsightsDateRange(preset, fromYmd = null, toYmd = null) {
+  return resolveDateRange(preset, fromYmd, toYmd);
+}
 
 /** Page through PostgREST (default max often 1000). */
 async function fetchAllRows(buildQuery, pageSize = 1000) {
@@ -14,71 +20,6 @@ async function fetchAllRows(buildQuery, pageSize = 1000) {
     from += pageSize;
   }
   return rows;
-}
-
-function startOfLocalDay(d = new Date()) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
-function startOfWeek(d = new Date()) {
-  const x = startOfLocalDay(d);
-  const day = x.getDay();
-  const diff = day === 0 ? 6 : day - 1;
-  x.setDate(x.getDate() - diff);
-  return x;
-}
-
-function startOfMonth(d = new Date()) {
-  const x = startOfLocalDay(d);
-  x.setDate(1);
-  return x;
-}
-
-function toDateOnly(d) {
-  const x = d instanceof Date ? d : new Date(d);
-  const y = x.getFullYear();
-  const m = String(x.getMonth() + 1).padStart(2, "0");
-  const day = String(x.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-/**
- * @param {'today'|'week'|'month'|'all'|'custom'} preset
- * @param {string|null} fromYmd
- * @param {string|null} toYmd
- */
-export function resolveInsightsDateRange(preset, fromYmd = null, toYmd = null) {
-  const now = new Date();
-  if (preset === "all") {
-    return { fromIso: null, toIso: null, fromDate: null, toDate: null };
-  }
-  if (preset === "custom") {
-    const from = fromYmd ? startOfLocalDay(new Date(`${fromYmd}T12:00:00`)) : null;
-    let to = toYmd ? startOfLocalDay(new Date(`${toYmd}T12:00:00`)) : null;
-    if (to) {
-      to = new Date(to);
-      to.setHours(23, 59, 59, 999);
-    }
-    return {
-      fromIso: from ? from.toISOString() : null,
-      toIso: to ? to.toISOString() : null,
-      fromDate: fromYmd || null,
-      toDate: toYmd || null,
-    };
-  }
-  let from;
-  if (preset === "today") from = startOfLocalDay(now);
-  else if (preset === "week") from = startOfWeek(now);
-  else from = startOfMonth(now);
-  const to = new Date(now);
-  return {
-    fromIso: from.toISOString(),
-    toIso: to.toISOString(),
-    fromDate: toDateOnly(from),
-    toDate: toDateOnly(to),
-  };
 }
 
 function money(n) {

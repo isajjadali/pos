@@ -1,5 +1,6 @@
 import { requireSupabase } from "../lib/supabase.js";
 import { toTitleCase, vendorInitialsPrefix } from "../utils/titleCase.js";
+import { applyTimestampFilter, resolveDateRange } from "../utils/dateRange.js";
 import { isProductTagsDbReady, setProductTags, TAGS_MIGRATION_HINT } from "./productTags.js";
 import { normalizeProductUnitFields } from "../utils/saleUnits.js";
 import { onlineOrOfflineWrite, onlineOrOfflineRead } from "./offlineGuard.js";
@@ -136,6 +137,9 @@ async function listProductsOnline({
   tag = null,
   tags = null,
   unitFilter = "all",
+  createdRangePreset = "all",
+  createdFrom = null,
+  createdTo = null,
   page = 1,
   pageSize = 20,
   sortKey = null,
@@ -148,8 +152,10 @@ async function listProductsOnline({
   const vendorList = normalizeFilterIds(vendorIds, vendorId);
   const categoryList = normalizeFilterIds(categoryIds, categoryId);
   const tagList = normalizeFilterTags(tags, tag);
+  const createdRange = resolveDateRange(createdRangePreset, createdFrom, createdTo);
 
   let query = sb.from("products").select("*, vendors(name), categories(name)", { count: "exact" });
+  query = applyTimestampFilter(query, "created_at", createdRange);
 
   if (sortKey === "vendor") {
     query = query.order("name", { ascending, foreignTable: "vendors" });
@@ -490,6 +496,10 @@ export async function deactivateProduct(id) {
   return data;
 }
 
+/**
+ * Soft-delete products (is_active = false). Barcode / stock / history kept.
+ * RPC name is historical; server no longer hard-deletes rows.
+ */
 export async function deleteProductsBulk(ids) {
   const result = await onlineOrOfflineWrite(
     async () => {

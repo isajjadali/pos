@@ -11,8 +11,10 @@ import { useMetaCacheStore } from "../stores/metaCache.js";
 import { countProductsByField } from "../utils/localCatalogCounts.js";
 import { syncMetaCacheAfterWrite } from "../utils/cacheSync.js";
 
-function listCategoriesLocal() {
-  return useMetaCacheStore().categories.map((c) => ({ id: c.id, name: c.name }));
+function listCategoriesLocal({ activeOnly = true } = {}) {
+  return useMetaCacheStore()
+    .categories.filter((c) => !activeOnly || c.is_active !== false)
+    .map((c) => ({ id: c.id, name: c.name, is_active: c.is_active !== false }));
 }
 
 function listCategoriesWithCountsLocal() {
@@ -21,42 +23,51 @@ function listCategoriesWithCountsLocal() {
     id: c.id,
     name: c.name,
     created_at: c.created_at ?? null,
+    is_active: c.is_active !== false,
     product_count: countMap[c.id] || 0,
   }));
 }
 
+/** Active categories for product forms / pickers. */
 export async function listCategories() {
   return onlineOrOfflineRead(async () => {
     const sb = requireSupabase();
     const { data, error } = await sb
       .from("categories")
-      .select("id, name, created_at")
+      .select("id, name, created_at, is_active")
+      .eq("is_active", true)
       .order("name");
     if (error) throw error;
     useMetaCacheStore().setCategories(data ?? []);
     return data ?? [];
-  }, listCategoriesLocal);
+  }, () => listCategoriesLocal({ activeOnly: true }));
 }
 
 /**
- * Categories with product counts (Categories admin page).
+ * Categories with product counts (Categories admin page) — includes inactive.
  */
 export async function listCategoriesWithCounts() {
   return onlineOrOfflineRead(async () => {
     const sb = requireSupabase();
     const { data, error } = await sb
       .from("categories")
-      .select("id, name, created_at, products(count)")
+      .select("id, name, created_at, is_active, products(count)")
       .order("name");
     if (error) throw error;
     const rows = (data ?? []).map((row) => ({
       id: row.id,
       name: row.name,
       created_at: row.created_at,
+      is_active: row.is_active !== false,
       product_count: Number(row.products?.[0]?.count ?? 0),
     }));
     useMetaCacheStore().setCategories(
-      rows.map((r) => ({ id: r.id, name: r.name, created_at: r.created_at }))
+      rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        created_at: r.created_at,
+        is_active: r.is_active,
+      }))
     );
     return rows;
   }, listCategoriesWithCountsLocal);
@@ -67,7 +78,11 @@ export async function createCategory(name) {
     const trimmed = toTitleCase(name);
     if (!trimmed) throw new Error("Category name is required");
     const sb = requireSupabase();
-    const { data, error } = await sb.from("categories").insert({ name: trimmed }).select().single();
+    const { data, error } = await sb
+      .from("categories")
+      .insert({ name: trimmed, is_active: true })
+      .select()
+      .single();
     if (error) throw error;
     useMetaCacheStore().upsertCategory(data);
     return data;
@@ -92,22 +107,20 @@ export async function updateCategory(id, { name } = {}) {
   }, () => offlineUpdateCategory(id, { name }));
 }
 
+/** Soft-delete category (is_active = false). Linked products keep category_id. */
 export async function deleteCategory(id) {
   return onlineOrOfflineWrite(async () => {
     if (!id) throw new Error("Category id required");
     const sb = requireSupabase();
-    const { count, error: cErr } = await sb
-      .from("products")
-      .select("id", { count: "exact", head: true })
-      .eq("category_id", id);
-    if (cErr) throw cErr;
-    if ((count ?? 0) > 0) {
-      throw new Error(`Cannot delete: ${count} product(s) still use this category`);
-    }
-    const { error } = await sb.from("categories").delete().eq("id", id);
+    const { data, error } = await sb
+      .from("categories")
+      .update({ is_active: false })
+      .eq("id", id)
+      .select()
+      .single();
     if (error) throw error;
-    useMetaCacheStore().removeCategory(id);
-    return { ok: true };
+    useMetaCacheStore().upsertCategory({ ...data, is_active: false });
+    return { ok: true, soft: true };
   }, () => offlineDeleteCategory(id));
 }
 

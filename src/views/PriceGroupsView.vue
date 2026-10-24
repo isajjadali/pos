@@ -7,7 +7,6 @@ import {
   NInputNumber,
   NDataTable,
   NSelect,
-  NSwitch,
   NText,
   NCard,
   NRadioGroup,
@@ -18,6 +17,8 @@ import {
   useDialog,
 } from "naive-ui";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
+import CreatedDateFilter from "../components/CreatedDateFilter.vue";
+import FilterToggleRow from "../components/FilterToggleRow.vue";
 import PricingHelperCard from "../components/PricingHelperCard.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
@@ -47,6 +48,11 @@ import {
   resolveSaleUnit,
 } from "../utils/saleUnits.js";
 import { matchesSearchFields } from "../utils/textSearch.js";
+import {
+  dateRangeFilterActive,
+  isTimestampInRange,
+  resolveDateRange,
+} from "../utils/dateRange.js";
 
 const RANGES_LS = "dw_price_group_ranges_v1";
 
@@ -65,6 +71,9 @@ const includeZeroStock = ref(true);
 /** all | piece | pack | box | multi */
 const unitFilter = ref("all");
 const unitFilterOptions = UNIT_LISTING_FILTER_OPTIONS;
+const createdRangePreset = ref("all");
+const createdFrom = ref(null);
+const createdTo = ref(null);
 
 /** exact = same purchase cost | ranges = custom min–max bands */
 const groupMode = ref("exact");
@@ -142,7 +151,8 @@ const hasActiveFilters = computed(
     (vendorFilter.value?.length ?? 0) > 0 ||
     !activeOnly.value ||
     !includeZeroStock.value ||
-    unitFilter.value !== "all"
+    unitFilter.value !== "all" ||
+    dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
 );
 
 /** Secondary filters only (inside More filters) — drives badge count. */
@@ -151,6 +161,7 @@ const moreFiltersCount = computed(() => {
   if (unitFilter.value !== "all") n += 1;
   if (!activeOnly.value) n += 1;
   if (!includeZeroStock.value) n += 1;
+  if (dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)) n += 1;
   return n;
 });
 const showMoreFilters = ref(false);
@@ -161,6 +172,9 @@ function clearFilters() {
   activeOnly.value = true;
   includeZeroStock.value = true;
   unitFilter.value = "all";
+  createdRangePreset.value = "all";
+  createdFrom.value = null;
+  createdTo.value = null;
 }
 
 function money(n) {
@@ -195,10 +209,16 @@ const filteredProducts = computed(() => {
   const q = search.value.trim().toLowerCase();
   const vendors = Array.isArray(vendorFilter.value) ? vendorFilter.value.filter(Boolean) : [];
   const vendorSet = vendors.length ? new Set(vendors.map(String)) : null;
+  const createdRange = resolveDateRange(
+    createdRangePreset.value,
+    createdFrom.value,
+    createdTo.value
+  );
   return (products.value ?? []).filter((p) => {
     if (!includeZeroStock.value && (Number(p.current_stock) || 0) <= 0) return false;
     if (vendorSet && !vendorSet.has(String(p.vendor_id))) return false;
     if (!productMatchesUnitFilter(p, unitFilter.value)) return false;
+    if (!isTimestampInRange(p.created_at, createdRange)) return false;
     if (!q) return true;
     return matchesSearchFields([p.name, p.external_product_id, p.barcode, p.sku], search.value);
   });
@@ -1120,24 +1140,34 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
 
     <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
       <NDrawerContent title="More filters" closable :native-scrollbar="false">
-        <div class="pg-more-filters">
+        <div class="more-filters">
           <NSelect
             v-model:value="unitFilter"
             :options="unitFilterOptions"
             placeholder="Unit"
             style="width: 100%"
           />
-          <NSwitch v-model:value="activeOnly">
-            <template #checked>Active only</template>
-            <template #unchecked>Include inactive</template>
-          </NSwitch>
-          <NSwitch v-model:value="includeZeroStock">
-            <template #checked>Include 0 stock</template>
-            <template #unchecked>Hide 0 stock</template>
-          </NSwitch>
-          <NText depth="3" style="font-size: 12px">
+          <CreatedDateFilter
+            v-model:preset="createdRangePreset"
+            v-model:from="createdFrom"
+            v-model:to="createdTo"
+            stacked
+          />
+          <NText depth="3" class="more-filters__hint">
             New sale applies to pack price when pack is set, else piece.
           </NText>
+          <div class="more-filters__toggles">
+            <FilterToggleRow
+              v-model="activeOnly"
+              label="Active only"
+              hint="Hide inactive products"
+            />
+            <FilterToggleRow
+              v-model="includeZeroStock"
+              label="Include zero stock"
+              hint="Show products with 0 on hand"
+            />
+          </div>
         </div>
       </NDrawerContent>
     </NDrawer>
@@ -1219,12 +1249,6 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
 </template>
 
 <style scoped>
-.pg-more-filters {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 4px 0 16px;
-}
 .pg-sticky {
   position: sticky;
   top: 0;

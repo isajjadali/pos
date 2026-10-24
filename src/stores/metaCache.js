@@ -54,7 +54,7 @@ export const useMetaCacheStore = defineStore("metaCache", () => {
 
     const [{ data: vRows, error: vErr }, { data: cRows, error: cErr }] = await Promise.all([
       sb.from("vendors").select("*").order("name"),
-      sb.from("categories").select("id, name").order("name"),
+      sb.from("categories").select("id, name, is_active, created_at").order("name"),
     ]);
     if (vErr) throw vErr;
     if (cErr) throw cErr;

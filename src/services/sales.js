@@ -1,16 +1,26 @@
 import { requireSupabase } from "../lib/supabase.js";
 import { syncProductCatalogAfterWrite } from "../utils/cacheSync.js";
+import { applyTimestampFilter, resolveDateRange } from "../utils/dateRange.js";
 
-export async function listSales({ page = 1, pageSize = 20 } = {}) {
+export async function listSales({
+  page = 1,
+  pageSize = 20,
+  createdRangePreset = "all",
+  createdFrom = null,
+  createdTo = null,
+} = {}) {
   const sb = requireSupabase();
   const from = (page - 1) * pageSize;
   const to = from + pageSize - 1;
-  const { data, error, count } = await sb
+  const range = resolveDateRange(createdRangePreset, createdFrom, createdTo);
+  let query = sb
     .from("sales")
     .select("*", { count: "exact" })
     .eq("status", "completed")
     .order("completed_at", { ascending: false })
     .range(from, to);
+  query = applyTimestampFilter(query, "completed_at", range);
+  const { data, error, count } = await query;
   if (error) throw error;
   return { rows: data ?? [], total: count ?? 0 };
 }

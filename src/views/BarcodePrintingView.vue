@@ -9,7 +9,6 @@ import {
   NRadioGroup,
   NRadio,
   NSelect,
-  NSwitch,
   NText,
   NDrawer,
   NDrawerContent,
@@ -20,8 +19,15 @@ import {
 } from "naive-ui";
 import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
+import CreatedDateFilter from "../components/CreatedDateFilter.vue";
+import FilterToggleRow from "../components/FilterToggleRow.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
+import {
+  dateRangeFilterActive,
+  isTimestampInRange,
+  resolveDateRange,
+} from "../utils/dateRange.js";
 import {
   listProductsForPrinting,
   reconcilePrint,
@@ -157,12 +163,17 @@ const stockFilterModeOptions = [
   { label: "Greater than (>)", value: "gt" },
 ];
 
+const createdRangePreset = ref("all");
+const createdFrom = ref(null);
+const createdTo = ref(null);
+
 const hasActiveFilters = computed(
   () =>
     Boolean(search.value.trim()) ||
     pendingFilter.value !== "pending" ||
     stockFilterEnabled.value ||
-    unitFilter.value !== "all"
+    unitFilter.value !== "all" ||
+    dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
 );
 
 /** Secondary filters only (inside More filters) — drives badge count. */
@@ -170,6 +181,7 @@ const moreFiltersCount = computed(() => {
   let n = 0;
   if (unitFilter.value !== "all") n += 1;
   if (stockFilterEnabled.value) n += 1;
+  if (dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)) n += 1;
   return n;
 });
 const showMoreFilters = ref(false);
@@ -181,6 +193,9 @@ function clearFilters() {
   stockFilterQty.value = 5;
   stockFilterMode.value = "lte";
   unitFilter.value = "all";
+  createdRangePreset.value = "all";
+  createdFrom.value = null;
+  createdTo.value = null;
   sortKey.value = null;
   sortOrder.value = null;
   syncTableSorterFromQuery();
@@ -209,6 +224,11 @@ function onBarcodeActionSelect(key) {
 
 const filteredRows = computed(() => {
   let list = rows.value;
+  const createdRange = resolveDateRange(
+    createdRangePreset.value,
+    createdFrom.value,
+    createdTo.value
+  );
   if (pendingFilter.value === "pending") {
     list = list.filter((r) => (r.unprinted_barcode_qty || 0) > 0);
   } else if (pendingFilter.value === "none") {
@@ -228,6 +248,7 @@ const filteredRows = computed(() => {
       else if (mode === "gt") list = list.filter((r) => stock(r) > n);
     }
   }
+  list = list.filter((r) => isTimestampInRange(r.created_at, createdRange));
   return list;
 });
 
@@ -672,29 +693,38 @@ onMounted(() => {
 
     <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
       <NDrawerContent title="More filters" closable :native-scrollbar="false">
-        <div class="barcode-more-filters">
+        <div class="more-filters">
           <NSelect
             v-model:value="unitFilter"
             :options="unitFilterOptions"
             placeholder="Unit"
             style="width: 100%"
           />
-          <NSpace align="center" :size="8" wrap>
-            <NSwitch v-model:value="stockFilterEnabled" size="small" />
-            <NText depth="3" style="font-size: 13px">Stock filter</NText>
-          </NSpace>
-          <NSelect
-            v-model:value="stockFilterMode"
-            :options="stockFilterModeOptions"
-            :disabled="!stockFilterEnabled"
-            style="width: 100%"
+          <CreatedDateFilter
+            v-model:preset="createdRangePreset"
+            v-model:from="createdFrom"
+            v-model:to="createdTo"
+            stacked
           />
-          <NInputNumber
-            v-model:value="stockFilterQty"
-            :min="0"
-            :disabled="!stockFilterEnabled"
-            style="width: 100%"
-          />
+          <div class="more-filters__toggles">
+            <FilterToggleRow
+              v-model="stockFilterEnabled"
+              label="Stock quantity filter"
+              hint="Filter by on-hand stock amount"
+            />
+            <div v-if="stockFilterEnabled" class="more-filters__sub">
+              <NSelect
+                v-model:value="stockFilterMode"
+                :options="stockFilterModeOptions"
+                style="width: 100%"
+              />
+              <NInputNumber
+                v-model:value="stockFilterQty"
+                :min="0"
+                style="width: 100%"
+              />
+            </div>
+          </div>
         </div>
       </NDrawerContent>
     </NDrawer>
@@ -719,12 +749,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.barcode-more-filters {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 4px 0 16px;
-}
 .selection-barcode-total {
   font-size: 14px;
   color: #374151;

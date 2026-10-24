@@ -9,6 +9,7 @@ import { startAdminOutboxSync } from "./services/adminOutboxSync.js";
 import { useMetaCacheStore } from "./stores/metaCache.js";
 import { useAdminOutboxStore } from "./stores/adminOutbox.js";
 import "./style.css";
+import "./styles/moreFilters.css";
 
 const app = createApp(App);
 const pinia = createPinia();

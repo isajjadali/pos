@@ -130,8 +130,12 @@ export async function updateScheduledSaleDiscount(id, row) {
   return data;
 }
 
+/** Soft-delete scheduled discount (is_active = false). */
 export async function deleteScheduledSaleDiscount(id) {
   const sb = requireSupabase();
-  const { error } = await sb.from("scheduled_sale_discounts").delete().eq("id", id);
+  const { error } = await sb
+    .from("scheduled_sale_discounts")
+    .update({ is_active: false })
+    .eq("id", id);
   if (error) throw error;
 }

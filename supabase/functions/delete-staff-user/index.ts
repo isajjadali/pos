@@ -5,15 +5,6 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const CREATED_BY_TABLES = [
-  "stock_receipts",
-  "stock_movements",
-  "pos_orders",
-  "sales",
-  "barcode_print_jobs",
-  "import_jobs",
-] as const;
-
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -82,7 +73,7 @@ Deno.serve(async (req) => {
 
     const { data: targetProfile } = await adminDb
       .from("profiles")
-      .select("role")
+      .select("role, is_active")
       .eq("id", userId)
       .maybeSingle();
 
@@ -97,25 +88,31 @@ Deno.serve(async (req) => {
       );
     }
 
-    for (const table of CREATED_BY_TABLES) {
-      const { error: clearErr } = await adminDb.from(table).update({ created_by: null }).eq("created_by", userId);
-      if (clearErr) {
-        return new Response(JSON.stringify({ error: clearErr.message }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    const { error: deleteErr } = await adminDb.auth.admin.deleteUser(userId);
-    if (deleteErr) {
-      return new Response(JSON.stringify({ error: deleteErr.message }), {
+    // Soft-delete: ban login + mark profile inactive (do not remove auth user / history).
+    const { error: banErr } = await adminDb.auth.admin.updateUserById(userId, {
+      ban_duration: "876600h",
+    });
+    if (banErr) {
+      return new Response(JSON.stringify({ error: banErr.message }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    return new Response(JSON.stringify({ ok: true, user_id: userId }), {
+    const { error: profileErr } = await adminDb.from("profiles").upsert({
+      id: userId,
+      role: targetRole,
+      is_active: false,
+      updated_at: new Date().toISOString(),
+    });
+    if (profileErr) {
+      return new Response(JSON.stringify({ error: profileErr.message }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response(JSON.stringify({ ok: true, soft: true, user_id: userId }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

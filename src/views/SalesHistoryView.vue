@@ -1,11 +1,14 @@
 <script setup>
 import { ref, onMounted, h, computed, watch } from "vue";
 import { NButton, NDataTable, NModal, NSpace, useMessage, useDialog } from "naive-ui";
+import ClearFiltersButton from "../components/ClearFiltersButton.vue";
+import CreatedDateFilter from "../components/CreatedDateFilter.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import ReceiptPreview from "../components/ReceiptPreview.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { listSales, getSale, saleGrossProfit, deleteSale, deleteSalesBulk } from "../services/sales.js";
 import { formatPkr } from "../utils/format.js";
+import { dateRangeFilterActive } from "../utils/dateRange.js";
 import { getSettings } from "../services/settings.js";
 import { printReceipt } from "../utils/receiptPrint.js";
 import { usePermissions } from "../composables/usePermissions.js";
@@ -26,6 +29,19 @@ const detail = ref(null);
 const receiptSettings = ref({});
 const receiptPrinting = ref(false);
 const checkedRowKeys = ref([]);
+const createdRangePreset = ref("all");
+const createdFrom = ref(null);
+const createdTo = ref(null);
+const hasActiveFilters = computed(() =>
+  dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
+);
+
+function clearFilters() {
+  createdRangePreset.value = "all";
+  createdFrom.value = null;
+  createdTo.value = null;
+  page.value = 1;
+}
 
 let loadFromQuery = () => {};
 const { routeSyncing } = useRouteQuerySync(
@@ -79,7 +95,13 @@ async function load() {
   if (!supabaseConfigured) return;
   loading.value = true;
   try {
-    const res = await listSales({ page: page.value, pageSize: pageSize.value });
+    const res = await listSales({
+      page: page.value,
+      pageSize: pageSize.value,
+      createdRangePreset: createdRangePreset.value,
+      createdFrom: createdFrom.value,
+      createdTo: createdTo.value,
+    });
     rows.value = res.rows;
     total.value = res.total;
     await loadSettings();
@@ -97,15 +119,15 @@ async function openSale(id) {
 }
 
 function confirmDeleteOne(row) {
-  dialog.error({
-    title: "Delete sale?",
-    content: `${row.sale_reference} — stock will be restored. This cannot be undone.`,
-    positiveText: "Delete",
-    negativeText: "Cancel",
+  dialog.warning({
+    title: "Cancel sale?",
+    content: `${row.sale_reference} — soft-delete (status cancelled). Stock restored; sale record kept.`,
+    positiveText: "Cancel sale",
+    negativeText: "Back",
     onPositiveClick: async () => {
       try {
         await deleteSale(row.id);
-        message.success("Sale deleted, stock restored");
+        message.success("Sale cancelled, stock restored");
         if (detail.value?.sale?.id === row.id) detailOpen.value = false;
         checkedRowKeys.value = checkedRowKeys.value.filter((id) => id !== row.id);
         await load();
@@ -119,15 +141,15 @@ function confirmDeleteOne(row) {
 function confirmDeleteSelected() {
   const ids = checkedRowKeys.value;
   if (!ids.length) return message.warning("Select sales first");
-  dialog.error({
-    title: "Delete selected sales?",
-    content: `${ids.length} sale(s) — stock restored for each. Cannot be undone.`,
-    positiveText: "Delete",
-    negativeText: "Cancel",
+  dialog.warning({
+    title: "Cancel selected sales?",
+    content: `${ids.length} sale(s) — soft-delete (cancelled). Stock restored; records kept.`,
+    positiveText: "Cancel sales",
+    negativeText: "Back",
     onPositiveClick: async () => {
       try {
         const res = await deleteSalesBulk(ids);
-        message.success(`Deleted ${res.deleted} sale(s)`);
+        message.success(`Cancelled ${res.deleted} sale(s)`);
         if (res.failed?.length) message.warning(`${res.failed.length} failed`);
         checkedRowKeys.value = [];
         detailOpen.value = false;
@@ -168,6 +190,13 @@ watch([page, pageSize], () => {
   load();
 });
 
+watch([createdRangePreset, createdFrom, createdTo], () => {
+  if (routeSyncing.value) return;
+  checkedRowKeys.value = [];
+  page.value = 1;
+  load();
+});
+
 loadFromQuery = load;
 
 onMounted(load);
@@ -177,14 +206,22 @@ onMounted(load);
   <div>
     <h1 style="margin-top: 0">Sales history</h1>
     <SupabaseRequiredAlert />
-    <NSpace v-if="canDeleteSales" style="margin-bottom: 12px">
+    <NSpace class="app-filter-stack" style="margin-bottom: 12px" align="center" wrap>
+      <CreatedDateFilter
+        v-model:preset="createdRangePreset"
+        v-model:from="createdFrom"
+        v-model:to="createdTo"
+        label="Sale date"
+      />
       <NButton
+        v-if="canDeleteSales"
         type="error"
         :disabled="!checkedRowKeys.length"
         @click="confirmDeleteSelected"
       >
         Delete selected{{ checkedRowKeys.length ? ` (${checkedRowKeys.length})` : "" }}
       </NButton>
+      <ClearFiltersButton v-if="hasActiveFilters" :disabled="false" @clear="clearFilters" />
     </NSpace>
     <NDataTable
       v-model:checked-row-keys="checkedRowKeys"

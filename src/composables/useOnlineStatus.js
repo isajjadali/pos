@@ -1,6 +1,10 @@
 import { ref, onMounted } from "vue";
 
-/** Shared online flag — one listener set for the app lifetime. */
+/**
+ * Shared UI online flag — mirrors `navigator.onLine` only.
+ * Sticky/cache routing lives in offlineGuard and must NOT flip this
+ * (false timeouts were showing "Offline" while the net was fine).
+ */
 const online = ref(typeof navigator !== "undefined" ? navigator.onLine : true);
 let listenersAttached = false;
 
@@ -13,15 +17,10 @@ function ensureListeners() {
   listenersAttached = true;
   window.addEventListener("online", sync);
   window.addEventListener("offline", sync);
-  // Sticky offline after a hung/failed request (see offlineGuard.markLikelyOffline)
-  window.addEventListener("dw-forced-offline", (e) => {
-    if (e?.detail?.offline) online.value = false;
-    else sync();
-  });
 }
 
 /**
- * Reactive `navigator.onLine` for POS / sync UI.
+ * Reactive `navigator.onLine` for banners / POS / sync UI.
  * Safe to call from multiple components.
  */
 export function useOnlineStatus() {

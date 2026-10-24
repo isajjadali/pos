@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted, watch, computed } from "vue";
 import {
   NButton,
   NSpace,
@@ -12,6 +12,8 @@ import {
   NInput,
   useMessage,
 } from "naive-ui";
+import ClearFiltersButton from "../components/ClearFiltersButton.vue";
+import CreatedDateFilter from "../components/CreatedDateFilter.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
@@ -20,6 +22,7 @@ import { listProducts } from "../services/products.js";
 import { listActiveVendorOptions } from "../services/vendors.js";
 import { PRODUCT_CATALOG_UPDATED } from "../services/productCatalog.js";
 import { rowNumberColumn, createdAtColumn } from "../utils/tableColumns.js";
+import { dateRangeFilterActive } from "../utils/dateRange.js";
 
 const message = useMessage();
 const movements = ref([]);
@@ -27,6 +30,18 @@ const lowStock = ref([]);
 const productOptions = ref([]);
 const vendorOptions = ref([]);
 const loading = ref(false);
+const createdRangePreset = ref("all");
+const createdFrom = ref(null);
+const createdTo = ref(null);
+const hasActiveFilters = computed(() =>
+  dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
+);
+
+function clearFilters() {
+  createdRangePreset.value = "all";
+  createdFrom.value = null;
+  createdTo.value = null;
+}
 
 const showReceive = ref(false);
 const showAdjust = ref(false);
@@ -49,7 +64,12 @@ async function load() {
   loading.value = true;
   try {
     const [m, l, p, v] = await Promise.all([
-      listStockMovements({ pageSize: 50 }),
+      listStockMovements({
+        pageSize: 50,
+        createdRangePreset: createdRangePreset.value,
+        createdFrom: createdFrom.value,
+        createdTo: createdTo.value,
+      }),
       listLowStockProducts(),
       listProducts({ pageSize: 500, activeOnly: true }),
       listActiveVendorOptions(),
@@ -87,6 +107,10 @@ async function submitAdjust() {
   }
 }
 
+watch([createdRangePreset, createdFrom, createdTo], () => {
+  load();
+});
+
 onMounted(() => {
   window.addEventListener(PRODUCT_CATALOG_UPDATED, load);
   load();
@@ -99,10 +123,16 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
     <h1 style="margin-top: 0">Inventory</h1>
     <SupabaseRequiredAlert />
     <OfflinePendingBanner />
-    <NSpace class="app-filter-stack" style="margin-bottom: 16px" wrap>
+    <NSpace class="app-filter-stack" style="margin-bottom: 16px" align="center" wrap>
+      <CreatedDateFilter
+        v-model:preset="createdRangePreset"
+        v-model:from="createdFrom"
+        v-model:to="createdTo"
+      />
       <NButton type="primary" :disabled="!supabaseConfigured" @click="showReceive = true">Receive stock</NButton>
       <NButton :disabled="!supabaseConfigured" @click="showAdjust = true">Adjustment / damage</NButton>
       <NButton @click="load">Refresh</NButton>
+      <ClearFiltersButton v-if="hasActiveFilters" :disabled="false" @clear="clearFilters" />
     </NSpace>
     <p v-if="lowStock.length"><strong>Low stock:</strong> {{ lowStock.map((p) => p.name).join(", ") }}</p>
     <div class="app-table-scroll">

@@ -270,13 +270,13 @@ async function save() {
 function confirmDelete(row) {
   dialog.warning({
     title: "Delete scheduled discount?",
-    content: row.name ? `"${row.name}"` : formatRange(row),
+    content: `${row.name ? `"${row.name}"` : formatRange(row)} — soft-delete (turned off). Record kept.`,
     positiveText: "Delete",
     negativeText: "Cancel",
     onPositiveClick: async () => {
       try {
         await deleteScheduledSaleDiscount(row.id);
-        message.success("Deleted");
+        message.success("Discount soft-deleted");
         await load();
       } catch (e) {
         message.error(e.message || "Delete failed");

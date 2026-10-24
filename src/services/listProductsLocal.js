@@ -2,6 +2,7 @@ import { toRaw } from "vue";
 import { useProductCacheStore } from "../stores/productCache.js";
 import { useMetaCacheStore } from "../stores/metaCache.js";
 import { matchesSearchFields } from "../utils/textSearch.js";
+import { isTimestampInRange, resolveDateRange } from "../utils/dateRange.js";
 
 /**
  * Offline / cache-backed product listing (same shape as listProducts).
@@ -36,6 +37,9 @@ export function listProductsLocal({
   tag = null,
   tags = null,
   unitFilter = "all",
+  createdRangePreset = "all",
+  createdFrom = null,
+  createdTo = null,
   page = 1,
   pageSize = 20,
   sortKey = null,
@@ -44,6 +48,7 @@ export function listProductsLocal({
   const products = toRaw(useProductCacheStore().products) || [];
   const vendors = toRaw(useMetaCacheStore().vendors) || [];
   const categories = toRaw(useMetaCacheStore().categories) || [];
+  const createdRange = resolveDateRange(createdRangePreset, createdFrom, createdTo);
 
   const vendorMap = Object.create(null);
   for (let i = 0; i < vendors.length; i++) {
@@ -70,6 +75,7 @@ export function listProductsLocal({
     if (vendorSet && !vendorSet.has(String(p.vendor_id))) continue;
     if (categorySet && !categorySet.has(String(p.category_id))) continue;
     if (activeOnly && p.is_active === false) continue;
+    if (!isTimestampInRange(p.created_at, createdRange)) continue;
 
     const low =
       p.is_low_stock ?? Number(p.current_stock) <= Number(p.low_stock_threshold ?? 5);

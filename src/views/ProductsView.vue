@@ -24,6 +24,8 @@ import {
 } from "naive-ui";
 import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
+import CreatedDateFilter from "../components/CreatedDateFilter.vue";
+import FilterToggleRow from "../components/FilterToggleRow.vue";
 import ProductBulkCreateModal from "../components/ProductBulkCreateModal.vue";
 import ProductBulkEditModal from "../components/ProductBulkEditModal.vue";
 import ShopifyBulkImagesModal from "../components/ShopifyBulkImagesModal.vue";
@@ -41,8 +43,6 @@ import {
   deleteProductsBulk,
   deactivateProductsBulk,
   reactivateProductsBulk,
-  snapshotProductsForUndo,
-  restoreProductsFromSnapshots,
   nextExternalProductId,
   fetchAllProductsForBulkEdit,
 } from "../services/products.js";
@@ -71,6 +71,7 @@ import {
   paginationTotalPrefix,
 } from "../utils/tableColumns.js";
 import { toTitleCase } from "../utils/titleCase.js";
+import { dateRangeFilterActive } from "../utils/dateRange.js";
 import { formatProductTagLabel, normalizeProductTags } from "../utils/productTags.js";
 import { isProductTagsDbReady, listProductTagOptions } from "../services/productTags.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
@@ -135,6 +136,9 @@ const activeOnly = ref(true);
 /** all | piece | pack | box | multi */
 const unitFilter = ref("all");
 const unitFilterOptions = UNIT_LISTING_FILTER_OPTIONS;
+const createdRangePreset = ref("all");
+const createdFrom = ref(null);
+const createdTo = ref(null);
 const hasActiveFilters = computed(
   () =>
     Boolean(search.value.trim()) ||
@@ -143,7 +147,8 @@ const hasActiveFilters = computed(
     (tagsDbReady.value && (tagFilter.value?.length ?? 0) > 0) ||
     lowStockOnly.value ||
     !activeOnly.value ||
-    unitFilter.value !== "all"
+    unitFilter.value !== "all" ||
+    dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
 );
 /** Secondary filters only (shown inside More filters) — drives badge count. */
 const moreFiltersCount = computed(() => {
@@ -153,6 +158,7 @@ const moreFiltersCount = computed(() => {
   if (unitFilter.value !== "all") n += 1;
   if (lowStockOnly.value) n += 1;
   if (!activeOnly.value) n += 1;
+  if (dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)) n += 1;
   return n;
 });
 const showMoreFilters = ref(false);
@@ -164,6 +170,9 @@ function clearFilters() {
   lowStockOnly.value = false;
   activeOnly.value = true;
   unitFilter.value = "all";
+  createdRangePreset.value = "all";
+  createdFrom.value = null;
+  createdTo.value = null;
   sortKey.value = null;
   sortOrder.value = null;
   page.value = 1;
@@ -198,7 +207,7 @@ const productActionOptions = computed(() => {
       key: "delete",
       disabled: !ready || !n,
       props: { style: "color: #dc2626" },
-    },
+    }, // soft-delete only — barcode & history kept
   ];
   if (shopifyFeatureOn) {
     opts.push(
@@ -664,6 +673,9 @@ async function load() {
       activeOnly: activeOnly.value,
       tags: tagFilter.value,
       unitFilter: unitFilter.value,
+      createdRangePreset: createdRangePreset.value,
+      createdFrom: createdFrom.value,
+      createdTo: createdTo.value,
       page: page.value,
       pageSize: pageSize.value,
       sortKey: sortKey.value,
@@ -836,35 +848,27 @@ function confirmBulkDelete() {
     message.warning("Select products first");
     return;
   }
-  dialog.error({
-    title: "Delete selected permanently?",
-    content: `${ids.length} product(s) will be removed from the database. Undo available for 30s (restores catalog + stock qty; movement history is not restored). Sale receipts keep product name snapshots.`,
+  dialog.warning({
+    title: "Delete selected?",
+    content: `${ids.length} product(s) will be soft-deleted (hidden from POS). Barcode, stock & history stay. Undo available for 30s.`,
     positiveText: "Delete",
     negativeText: "Cancel",
     onPositiveClick: async () => {
       try {
-        const snapshots = await snapshotProductsForUndo(ids);
         const res = await deleteProductsBulk(ids);
-        if (res.deleted > 0 && snapshots.length) {
+        const deletedCount = Number(res?.deleted) || 0;
+        if (deletedCount > 0) {
           registerUndo({
-            label: `Restore ${snapshots.length} product(s)`,
+            label: `Reactivate ${deletedCount} product(s)`,
             run: async () => {
-              const restored = await restoreProductsFromSnapshots(snapshots);
-              if (restored.errors?.length) {
-                throw new Error(
-                  `Restored ${restored.restored}; ${restored.errors.length} failed`
-                );
-              }
+              await reactivateProductsBulk(ids);
             },
           });
         }
-        const deletedCount = Number(res?.deleted) || 0;
         if (res.failed?.length) {
-          const tip =
-            deletedCount > 0 && snapshots.length
-              ? `Deleted ${deletedCount}; ${res.failed.length} failed — press Undo or Ctrl+Z (30s)`
-              : `Deleted ${deletedCount}; ${res.failed.length} failed`;
-          message.warning(tip);
+          message.warning(
+            `Deleted ${deletedCount}; ${res.failed.length} failed — Undo / Ctrl+Z (30s)`
+          );
         } else {
           notifyWithUndo(`Deleted ${deletedCount} product(s)`);
         }
@@ -994,12 +998,15 @@ function onPageSizeChange(s) {
   page.value = 1;
 }
 
-watch([vendorFilter, categoryFilter, tagFilter, lowStockOnly, activeOnly, unitFilter], () => {
-  if (routeSyncing.value) return;
-  clearRowSelection();
-  page.value = 1;
-  load();
-});
+watch(
+  [vendorFilter, categoryFilter, tagFilter, lowStockOnly, activeOnly, unitFilter, createdRangePreset, createdFrom, createdTo],
+  () => {
+    if (routeSyncing.value) return;
+    clearRowSelection();
+    page.value = 1;
+    load();
+  }
+);
 
 let searchTimer;
 watch(search, () => {
@@ -1120,7 +1127,7 @@ onUnmounted(() => {
 
     <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
       <NDrawerContent title="More filters" closable :native-scrollbar="false">
-        <div class="products-more-filters">
+        <div class="more-filters">
           <NSelect
             v-model:value="categoryFilter"
             :options="categoryOptions"
@@ -1148,14 +1155,24 @@ onUnmounted(() => {
             placeholder="Unit"
             style="width: 100%"
           />
-          <NSwitch v-model:value="lowStockOnly">
-            <template #checked>Low stock</template>
-            <template #unchecked>All stock</template>
-          </NSwitch>
-          <NSwitch v-model:value="activeOnly">
-            <template #checked>Active only</template>
-            <template #unchecked>Include inactive</template>
-          </NSwitch>
+          <CreatedDateFilter
+            v-model:preset="createdRangePreset"
+            v-model:from="createdFrom"
+            v-model:to="createdTo"
+            stacked
+          />
+          <div class="more-filters__toggles">
+            <FilterToggleRow
+              v-model="lowStockOnly"
+              label="Low stock only"
+              hint="Show products at or below threshold"
+            />
+            <FilterToggleRow
+              v-model="activeOnly"
+              label="Active only"
+              hint="Hide inactive / soft-deleted products"
+            />
+          </div>
         </div>
       </NDrawerContent>
     </NDrawer>
@@ -1412,12 +1429,6 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.products-more-filters {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 4px 0 16px;
-}
 .product-modal-body {
   max-height: min(560px, calc(100vh - 180px));
   overflow-x: hidden;

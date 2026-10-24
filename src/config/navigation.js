@@ -15,6 +15,7 @@ import {
   AnalyticsOutline,
   StatsChartOutline,
   ConstructOutline,
+  ListOutline,
 } from "@vicons/ionicons5";
 import { FEATURE_SHOPIFY } from "./features.js";
 
@@ -24,7 +25,7 @@ import { FEATURE_SHOPIFY } from "./features.js";
  * Parent groups have `children` and are not routes.
  *
  * Outside (daily ops): Dashboard, POS, Products, Categories, Vendors, Settings.
- * Reports: Insights, Sales History, Price groups.
+ * Reports: Insights, Sales History, Price groups, Audit logs.
  * Operations: Inventory, Barcodes, Import, Shopify.
  * Admin: Staff.
  */
@@ -43,6 +44,7 @@ export const NAV_ITEMS = [
       { label: "Insights", key: "insights", icon: AnalyticsOutline, adminOnly: true },
       { label: "Sales History", key: "sales", icon: ReceiptOutline, adminOnly: true },
       { label: "Price groups", key: "price-groups", icon: PricetagOutline, adminOnly: true },
+      { label: "Audit logs", key: "audit-logs", icon: ListOutline, adminOnly: true },
     ],
   },
   {

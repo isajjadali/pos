@@ -6,7 +6,7 @@ import { syncProductCatalogAfterWrite } from "../utils/cacheSync.js";
 import { toRaw } from "vue";
 
 const LIST_FIELDS =
-  "id, name, external_product_id, selling_price, weighted_avg_cost, current_stock, vendor_id, is_active, pieces_per_pack, pieces_per_box, piece_selling_price, pack_selling_price, box_selling_price, default_sale_unit";
+  "id, name, external_product_id, selling_price, weighted_avg_cost, current_stock, vendor_id, is_active, pieces_per_pack, pieces_per_box, piece_selling_price, pack_selling_price, box_selling_price, default_sale_unit, created_at";
 
 /** Money key for grouping (2 decimal places). */
 export function priceGroupKey(price) {

@@ -61,7 +61,10 @@ async function execMutation(entry) {
       return;
     }
     case "category.delete": {
-      const { error } = await sb.from("categories").delete().eq("id", payload.id);
+      const { error } = await sb
+        .from("categories")
+        .update({ is_active: false })
+        .eq("id", payload.id);
       if (error) throw error;
       return;
     }

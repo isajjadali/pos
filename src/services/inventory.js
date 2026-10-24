@@ -7,19 +7,29 @@ import {
 } from "./adminOfflineApply.js";
 import { useProductCacheStore } from "../stores/productCache.js";
 import { syncProductCatalogAfterWrite } from "../utils/cacheSync.js";
+import { applyTimestampFilter, resolveDateRange } from "../utils/dateRange.js";
 import { toRaw } from "vue";
 
-export async function listStockMovements({ productId = null, page = 1, pageSize = 30 } = {}) {
+export async function listStockMovements({
+  productId = null,
+  page = 1,
+  pageSize = 30,
+  createdRangePreset = "all",
+  createdFrom = null,
+  createdTo = null,
+} = {}) {
   return onlineOrOfflineRead(
     async () => {
       const sb = requireSupabase();
       const from = (page - 1) * pageSize;
       const to = from + pageSize - 1;
+      const range = resolveDateRange(createdRangePreset, createdFrom, createdTo);
       let q = sb
         .from("stock_movements")
         .select("*, products(name, barcode)", { count: "exact" })
         .order("created_at", { ascending: false })
         .range(from, to);
+      q = applyTimestampFilter(q, "created_at", range);
       if (productId) q = q.eq("product_id", productId);
       const { data, error, count } = await q;
       if (error) throw error;

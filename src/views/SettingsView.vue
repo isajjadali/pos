@@ -95,7 +95,7 @@ const savingPosLayout = ref(false);
 const printingLabelSample = ref(false);
 
 const labelPreviewName = ref("Non-Stick Spoon");
-const labelPreviewBarcode = ref("DW43C441C6A2");
+const labelPreviewBarcode = ref("DW270C43C441C6A2");
 const labelPreviewPrice = ref(250);
 
 async function printSample() {

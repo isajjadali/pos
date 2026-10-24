@@ -22,6 +22,8 @@ import {
 } from "naive-ui";
 import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
+import CreatedDateFilter from "../components/CreatedDateFilter.vue";
+import FilterToggleRow from "../components/FilterToggleRow.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
@@ -39,6 +41,7 @@ import {
   paginationTotalPrefix,
 } from "../utils/tableColumns.js";
 import { toTitleCase } from "../utils/titleCase.js";
+import { dateRangeFilterActive } from "../utils/dateRange.js";
 import { PRODUCT_CATALOG_UPDATED } from "../services/productCatalog.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
 
@@ -54,21 +57,33 @@ const activeOnly = ref(false);
 const productFilter = ref("all");
 const sortKey = ref(null);
 const sortOrder = ref(null);
+const createdRangePreset = ref("all");
+const createdFrom = ref(null);
+const createdTo = ref(null);
 const hasActiveFilters = computed(
   () =>
     Boolean(search.value.trim()) ||
     productFilter.value !== "all" ||
     activeOnly.value ||
     sortKey.value ||
-    sortOrder.value
+    sortOrder.value ||
+    dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
 );
 /** Secondary filters only (inside More filters) — drives badge count. */
-const moreFiltersCount = computed(() => (activeOnly.value ? 1 : 0));
+const moreFiltersCount = computed(() => {
+  let n = 0;
+  if (activeOnly.value) n += 1;
+  if (dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)) n += 1;
+  return n;
+});
 const showMoreFilters = ref(false);
 function clearFilters() {
   search.value = "";
   productFilter.value = "all";
   activeOnly.value = false;
+  createdRangePreset.value = "all";
+  createdFrom.value = null;
+  createdTo.value = null;
   sortKey.value = null;
   sortOrder.value = null;
   page.value = 1;
@@ -215,6 +230,9 @@ async function load() {
       search: search.value,
       activeOnly: activeOnly.value,
       productFilter: productFilter.value,
+      createdRangePreset: createdRangePreset.value,
+      createdFrom: createdFrom.value,
+      createdTo: createdTo.value,
       page: page.value,
       pageSize: pageSize.value,
       sortKey: sortKey.value,
@@ -250,15 +268,15 @@ function openEdit(row) {
 }
 
 function confirmDelete(row) {
-  dialog.error({
+  dialog.warning({
     title: "Delete vendor?",
-    content: `"${row.name}" only deletes if no products are linked to this vendor.`,
+    content: `"${row.name}" will be soft-deleted (inactive). Products keep this vendor link. History is kept.`,
     positiveText: "Delete",
     negativeText: "Cancel",
     onPositiveClick: async () => {
       try {
         await deleteVendor(row.id);
-        message.success("Vendor deleted");
+        message.success("Vendor soft-deleted");
         checkedRowKeys.value = checkedRowKeys.value.filter((id) => id !== row.id);
         await load();
       } catch (e) {
@@ -271,9 +289,9 @@ function confirmDelete(row) {
 function confirmDeleteSelected() {
   const ids = checkedRowKeys.value;
   if (!ids.length) return message.warning("Select vendors first");
-  dialog.error({
+  dialog.warning({
     title: "Delete selected vendors?",
-    content: `${ids.length} vendor(s). Each is skipped if products are still linked.`,
+    content: `${ids.length} vendor(s) will be soft-deleted (inactive). Linked products & history stay.`,
     positiveText: "Delete",
     negativeText: "Cancel",
     onPositiveClick: async () => {
@@ -287,7 +305,7 @@ function confirmDeleteSelected() {
           errors.push(e.message || "failed");
         }
       }
-      if (ok) message.success(`Deleted ${ok} vendor(s)`);
+      if (ok) message.success(`Soft-deleted ${ok} vendor(s)`);
       if (errors.length) message.warning(errors[0]);
       checkedRowKeys.value = [];
       await load();
@@ -350,6 +368,12 @@ watch(activeOnly, () => {
   load();
 });
 watch(productFilter, () => {
+  if (routeSyncing.value) return;
+  checkedRowKeys.value = [];
+  page.value = 1;
+  load();
+});
+watch([createdRangePreset, createdFrom, createdTo], () => {
   if (routeSyncing.value) return;
   checkedRowKeys.value = [];
   page.value = 1;
@@ -420,11 +444,20 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
 
     <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
       <NDrawerContent title="More filters" closable :native-scrollbar="false">
-        <div class="vendors-more-filters">
-          <NSwitch v-model:value="activeOnly">
-            <template #checked>Active only</template>
-            <template #unchecked>All vendors</template>
-          </NSwitch>
+        <div class="more-filters">
+          <CreatedDateFilter
+            v-model:preset="createdRangePreset"
+            v-model:from="createdFrom"
+            v-model:to="createdTo"
+            stacked
+          />
+          <div class="more-filters__toggles">
+            <FilterToggleRow
+              v-model="activeOnly"
+              label="Active only"
+              hint="Hide inactive vendors"
+            />
+          </div>
         </div>
       </NDrawerContent>
     </NDrawer>
@@ -488,12 +521,6 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
 </template>
 
 <style scoped>
-.vendors-more-filters {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 4px 0 16px;
-}
 .vendor-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

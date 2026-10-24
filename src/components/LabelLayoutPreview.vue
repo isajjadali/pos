@@ -8,7 +8,7 @@ const props = defineProps({
   widthMm: { type: Number, default: 40 },
   heightMm: { type: Number, default: 25 },
   name: { type: String, default: "Sample Product Name" },
-  barcode: { type: String, default: "DW1A2B3C4D5E" },
+  barcode: { type: String, default: "DW270C43C441C6A2" },
   price: { type: Number, default: 250 },
   /** Stored key e.g. arial — preview CSS; Zebra print uses scalable font 0 */
   fontFamily: { type: String, default: "arial" },

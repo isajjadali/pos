@@ -1,5 +1,6 @@
 import { requireSupabase } from "../lib/supabase.js";
 import { toTitleCase } from "../utils/titleCase.js";
+import { isTimestampInRange, resolveDateRange } from "../utils/dateRange.js";
 import { onlineOrOfflineWrite, onlineOrOfflineRead } from "./offlineGuard.js";
 import {
   offlineCreateVendor,
@@ -29,6 +30,9 @@ function listVendorsLocal({
   search = "",
   activeOnly = false,
   productFilter = "all",
+  createdRangePreset = "all",
+  createdFrom = null,
+  createdTo = null,
   page = 1,
   pageSize = 20,
   sortKey = null,
@@ -36,6 +40,7 @@ function listVendorsLocal({
 } = {}) {
   const meta = useMetaCacheStore();
   const countMap = countProductsByField("vendor_id");
+  const createdRange = resolveDateRange(createdRangePreset, createdFrom, createdTo);
   let enriched = meta.vendors.map((v) => ({
     ...v,
     product_count: countMap[v.id] || 0,
@@ -46,6 +51,7 @@ function listVendorsLocal({
   if (activeOnly) enriched = enriched.filter((v) => v.is_active !== false);
   if (productFilter === "none") enriched = enriched.filter((v) => v.product_count === 0);
   else if (productFilter === "has") enriched = enriched.filter((v) => v.product_count > 0);
+  enriched = enriched.filter((v) => isTimestampInRange(v.created_at, createdRange));
 
   if (sortKey && sortOrder) {
     const asc = sortOrder === "ascend";
@@ -82,12 +88,16 @@ export async function listVendorsWithProductCounts(opts = {}) {
       search = "",
       activeOnly = false,
       productFilter = "all",
+      createdRangePreset = "all",
+      createdFrom = null,
+      createdTo = null,
       page = 1,
       pageSize = 20,
       sortKey = null,
       sortOrder = null,
     } = opts;
     const sb = requireSupabase();
+    const createdRange = resolveDateRange(createdRangePreset, createdFrom, createdTo);
 
     let query = sb.from("vendors").select("*").order("name");
     if (search.trim()) {
@@ -120,6 +130,7 @@ export async function listVendorsWithProductCounts(opts = {}) {
     } else if (productFilter === "has") {
       enriched = enriched.filter((v) => v.product_count > 0);
     }
+    enriched = enriched.filter((v) => isTimestampInRange(v.created_at, createdRange));
 
     if (sortKey && sortOrder) {
       const asc = sortOrder === "ascend";
@@ -211,13 +222,17 @@ export async function updateVendor(id, payload) {
   }, () => offlineUpdateVendor(id, payload));
 }
 
-/** Deletes vendor only when zero products are linked (admin RPC). */
+/** Soft-delete vendor (is_active = false). Linked products keep vendor_id. */
 export async function deleteVendor(id) {
   return onlineOrOfflineWrite(async () => {
     const sb = requireSupabase();
     const { data, error } = await sb.rpc("delete_vendor_if_unused", { p_vendor_id: id });
     if (error) throw error;
-    useMetaCacheStore().removeVendor(id);
+    useMetaCacheStore().upsertVendor({
+      ...(useMetaCacheStore().vendors.find((v) => v.id === id) || { id }),
+      is_active: false,
+      updated_at: new Date().toISOString(),
+    });
     return data;
   }, () => offlineDeleteVendor(id));
 }

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, h, computed } from "vue";
+import { ref, onMounted, h, computed, watch } from "vue";
 import {
   NButton,
   NSpace,
@@ -15,6 +15,8 @@ import {
   useMessage,
   useDialog,
 } from "naive-ui";
+import ClearFiltersButton from "../components/ClearFiltersButton.vue";
+import CreatedDateFilter from "../components/CreatedDateFilter.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { useAuthStore } from "../stores/auth.js";
@@ -27,6 +29,11 @@ import {
 } from "../services/staff.js";
 import { rowNumberColumn, createdAtColumn, fitNameColumnWidth } from "../utils/tableColumns.js";
 import { toTitleCase } from "../utils/titleCase.js";
+import {
+  dateRangeFilterActive,
+  isTimestampInRange,
+  resolveDateRange,
+} from "../utils/dateRange.js";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -34,6 +41,24 @@ const auth = useAuthStore();
 
 const loading = ref(false);
 const rows = ref([]);
+const allRows = ref([]);
+const createdRangePreset = ref("all");
+const createdFrom = ref(null);
+const createdTo = ref(null);
+const hasActiveFilters = computed(() =>
+  dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
+);
+
+function clearFilters() {
+  createdRangePreset.value = "all";
+  createdFrom.value = null;
+  createdTo.value = null;
+}
+
+function applyStaffDateFilter() {
+  const range = resolveDateRange(createdRangePreset.value, createdFrom.value, createdTo.value);
+  rows.value = allRows.value.filter((r) => isTimestampInRange(r.created_at, range));
+}
 
 const showCreate = ref(false);
 const showEdit = ref(false);
@@ -81,6 +106,17 @@ const columns = computed(() => [
         () => (row.role === "admin" ? "Admin" : "Sales")
       ),
   },
+  {
+    title: "Status",
+    key: "is_active",
+    width: 100,
+    render: (row) =>
+      h(
+        NTag,
+        { type: row.is_active !== false ? "success" : "default", size: "small" },
+        () => (row.is_active !== false ? "Active" : "Inactive")
+      ),
+  },
   createdAtColumn(),
   {
     title: "",
@@ -89,17 +125,19 @@ const columns = computed(() => [
     render: (row) =>
       h(NSpace, { size: "small" }, () => [
         h(NButton, { size: "small", onClick: () => openEdit(row) }, { default: () => "Edit" }),
-        h(
-          NButton,
-          {
-            size: "small",
-            type: "error",
-            quaternary: true,
-            disabled: row.id === auth.user?.id || row.role === "admin",
-            onClick: () => confirmDeleteStaff(row),
-          },
-          { default: () => "Delete" }
-        ),
+        row.is_active !== false
+          ? h(
+              NButton,
+              {
+                size: "small",
+                type: "error",
+                quaternary: true,
+                disabled: row.id === auth.user?.id || row.role === "admin",
+                onClick: () => confirmDeleteStaff(row),
+              },
+              { default: () => "Delete" }
+            )
+          : null,
       ]),
   },
 ]);
@@ -110,13 +148,18 @@ async function load() {
   if (!supabaseConfigured) return;
   loading.value = true;
   try {
-    rows.value = await listStaffUsers();
+    allRows.value = await listStaffUsers();
+    applyStaffDateFilter();
   } catch (e) {
     message.error(e.message || "Could not load staff");
   } finally {
     loading.value = false;
   }
 }
+
+watch([createdRangePreset, createdFrom, createdTo], () => {
+  applyStaffDateFilter();
+});
 
 function openCreate() {
   createForm.value = emptyCreateForm();
@@ -170,13 +213,13 @@ function confirmDeleteStaff(row) {
   const label = row.full_name || row.email || "this user";
   dialog.warning({
     title: "Delete staff user?",
-    content: `Remove ${label}? They will not be able to sign in again.`,
+    content: `Soft-delete ${label}? Login banned; profile kept inactive (no hard delete).`,
     positiveText: "Delete",
     negativeText: "Cancel",
     onPositiveClick: async () => {
       try {
         await deleteStaffUser(row.id);
-        message.success("Staff user deleted");
+        message.success("Staff user soft-deleted");
         await load();
       } catch (e) {
         const msg = e.message || "Delete failed";
@@ -248,11 +291,17 @@ onMounted(load);
       cannot be deleted until their role is changed to Sales. Listing and role edits use database
       RPCs.
     </NAlert>
-    <NSpace class="app-filter-stack" style="margin-bottom: 16px" wrap>
+    <NSpace class="app-filter-stack" style="margin-bottom: 16px" align="center" wrap>
+      <CreatedDateFilter
+        v-model:preset="createdRangePreset"
+        v-model:from="createdFrom"
+        v-model:to="createdTo"
+      />
       <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
         Add staff user
       </NButton>
       <NButton :disabled="!supabaseConfigured" @click="load">Refresh</NButton>
+      <ClearFiltersButton v-if="hasActiveFilters" :disabled="false" @clear="clearFilters" />
     </NSpace>
     <div class="app-table-scroll">
       <NDataTable
