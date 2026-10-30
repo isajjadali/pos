@@ -84,6 +84,12 @@ h1 {
   min-height: 220px;
 }
 
+/* POS: cart table fills; checkout bar stays at the bottom of the viewport */
+.app-page--fill > .pos-checkout {
+  flex: 0 0 auto;
+  margin-top: auto;
+}
+
 /* Filters on one row, actions on the next (wraps on narrow screens) */
 .app-toolbar {
   display: flex;

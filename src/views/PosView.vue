@@ -9,7 +9,6 @@ import {
   NInputNumber,
   NSelect,
   NDataTable,
-  NCard,
   NModal,
   NSpin,
   NText,
@@ -1001,8 +1000,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="pos-page">
-    <h1 style="margin-top: 0">POS / New Sale</h1>
+  <div class="pos-page app-page--fill">
+    <h1 style="margin-top: 0; margin-bottom: 8px">POS / New Sale</h1>
     <p class="pos-hint">
       <kbd>F7</kbd> hold tab (park sale locally; qty stays reserved in other tabs) ·
       <kbd>F9</kbd> checkout · <kbd>F8</kbd> new tab · <kbd>F10</kbd> clear cart ·
@@ -1042,7 +1041,7 @@ onUnmounted(() => {
         </div>
       </div>
     </NAlert>
-    <NCard size="small" class="pos-card">
+    <div class="pos-head">
       <div class="pos-tabs-row">
         <div
           v-for="c in carts"
@@ -1130,7 +1129,9 @@ onUnmounted(() => {
           <ClearFiltersButton :disabled="!hasCartLineFilter" @clear="clearCartLineFilter" />
         </NSpace>
       </div>
+    </div>
 
+    <div class="app-table-panel pos-table-panel">
       <NDataTable
         class="pos-table"
         :row-key="(row) => row.lineId"
@@ -1143,54 +1144,55 @@ onUnmounted(() => {
         }"
         size="medium"
         striped
+        flex-height
         :scroll-x="820"
       />
+    </div>
 
-      <div class="pos-checkout">
-        <div v-if="scheduledPromoOnCart" class="pos-scheduled-promo">
-          <span>
-            Auto discount:
-            <strong>{{ scheduledPromoOnCart.name || "Scheduled sale" }}</strong>
-            {{ scheduledPromoBannerText }}
-          </span>
-          <NButton
-            size="tiny"
-            quaternary
-            class="pos-scheduled-promo-remove"
-            @click="removeScheduledPromoFromSale"
-          >
-            Remove from this sale
-          </NButton>
-        </div>
-        <div class="pos-totals">
-          <div class="pos-totals-row">
-            <span>Subtotal</span>
-            <strong>{{ formatPkr(subtotal) }}</strong>
-          </div>
-          <div class="pos-totals-row">
-            <span>Discount <span class="pos-kbd-hint">(F4)</span></span>
-            <NInputNumber ref="discountRef" v-model:value="discount" :min="0" class="pos-num-input" />
-          </div>
-          <div class="pos-totals-row pos-totals-row--emph">
-            <span>Total</span>
-            <strong>{{ formatPkr(total) }}</strong>
-          </div>
-          <div class="pos-totals-row">
-            <span>Cash <span class="pos-kbd-hint">(F5 · F6=total)</span></span>
-            <NInputNumber ref="cashRef" v-model:value="cashReceived" :min="0" class="pos-num-input" />
-          </div>
-          <div class="pos-totals-row">
-            <span>Change</span>
-            <strong>{{ formatPkr(changeDue) }}</strong>
-          </div>
-        </div>
-        <NSpace class="pos-actions" justify="end">
-          <NButton @click="holdOrder">Hold tab (F7)</NButton>
-          <NButton type="warning" @click="confirmClearCart">Clear cart (F10)</NButton>
-          <NButton type="primary" :loading="completing" @click="complete">Complete sale (F9)</NButton>
-        </NSpace>
+    <div class="pos-checkout">
+      <div v-if="scheduledPromoOnCart" class="pos-scheduled-promo">
+        <span>
+          Auto discount:
+          <strong>{{ scheduledPromoOnCart.name || "Scheduled sale" }}</strong>
+          {{ scheduledPromoBannerText }}
+        </span>
+        <NButton
+          size="tiny"
+          quaternary
+          class="pos-scheduled-promo-remove"
+          @click="removeScheduledPromoFromSale"
+        >
+          Remove from this sale
+        </NButton>
       </div>
-    </NCard>
+      <div class="pos-totals">
+        <div class="pos-totals-row">
+          <span>Subtotal</span>
+          <strong>{{ formatPkr(subtotal) }}</strong>
+        </div>
+        <div class="pos-totals-row">
+          <span>Discount <span class="pos-kbd-hint">(F4)</span></span>
+          <NInputNumber ref="discountRef" v-model:value="discount" :min="0" class="pos-num-input" />
+        </div>
+        <div class="pos-totals-row pos-totals-row--emph">
+          <span>Total</span>
+          <strong>{{ formatPkr(total) }}</strong>
+        </div>
+        <div class="pos-totals-row">
+          <span>Cash <span class="pos-kbd-hint">(F5 · F6=total)</span></span>
+          <NInputNumber ref="cashRef" v-model:value="cashReceived" :min="0" class="pos-num-input" />
+        </div>
+        <div class="pos-totals-row">
+          <span>Change</span>
+          <strong>{{ formatPkr(changeDue) }}</strong>
+        </div>
+      </div>
+      <NSpace class="pos-actions" justify="end">
+        <NButton @click="holdOrder">Hold tab (F7)</NButton>
+        <NButton type="warning" @click="confirmClearCart">Clear cart (F10)</NButton>
+        <NButton type="primary" :loading="completing" @click="complete">Complete sale (F9)</NButton>
+      </NSpace>
+    </div>
 
     <NModal
       :show="receiptOpen"
@@ -1231,8 +1233,20 @@ onUnmounted(() => {
   border: 1px solid #9ca3af;
   border-radius: 4px;
 }
-.pos-card {
-  max-width: 100%;
+.pos-head {
+  flex: 0 0 auto;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  padding: 12px 12px 8px;
+}
+.pos-table-panel {
+  background: #fff;
+  border-left: 1px solid #e5e7eb;
+  border-right: 1px solid #e5e7eb;
+  padding: 0 12px;
+  min-height: 220px;
 }
 .pos-tabs-row {
   display: flex;
@@ -1310,6 +1324,7 @@ onUnmounted(() => {
   margin-left: 4px;
 }
 .pos-scan-wrap {
+  flex: 0 0 auto;
   position: relative;
   margin-bottom: 10px;
   z-index: 20;
@@ -1375,11 +1390,12 @@ onUnmounted(() => {
   color: #dc2626;
 }
 .pos-cart-filter {
-  margin-bottom: 12px;
+  margin-bottom: 0;
   max-width: 420px;
+  flex: 0 0 auto;
 }
 .pos-table {
-  margin-bottom: 8px;
+  margin-bottom: 0;
 }
 .pos-table :deep(.pos-cart-row td) {
   padding-top: 14px !important;
@@ -1449,13 +1465,20 @@ onUnmounted(() => {
   color: #111827;
 }
 .pos-checkout {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 12px;
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: 0;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
   border-top: 1px solid #e5e7eb;
+  border-radius: 0 0 10px 10px;
+  box-shadow: 0 -4px 12px rgba(15, 23, 42, 0.04);
+  background: #fff;
+  position: relative;
+  z-index: 2;
 }
 .pos-totals {
   width: min(340px, 100%);

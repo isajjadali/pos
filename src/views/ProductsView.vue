@@ -14,8 +14,6 @@ import {
   NSelect,
   NAlert,
   NText,
-  NDrawer,
-  NDrawerContent,
   NDropdown,
   NButtonGroup,
   NIcon,
@@ -24,8 +22,7 @@ import {
 } from "naive-ui";
 import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
-import CreatedDateFilter from "../components/CreatedDateFilter.vue";
-import FilterToggleRow from "../components/FilterToggleRow.vue";
+import ProductFilterRules from "../components/ProductFilterRules.vue";
 import ProductBulkCreateModal from "../components/ProductBulkCreateModal.vue";
 import ProductBulkEditModal from "../components/ProductBulkEditModal.vue";
 import ShopifyBulkImagesModal from "../components/ShopifyBulkImagesModal.vue";
@@ -75,6 +72,7 @@ import { dateRangeFilterActive } from "../utils/dateRange.js";
 import { formatProductTagLabel, normalizeProductTags } from "../utils/productTags.js";
 import { isProductTagsDbReady, listProductTagOptions } from "../services/productTags.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
+import { DEFAULT_KEYWORD_FIELDS } from "../utils/productAdvancedFilters.js";
 import {
   SALE_UNIT_OPTIONS,
   UNIT_LISTING_FILTER_OPTIONS,
@@ -83,6 +81,22 @@ import {
   packsAvailable,
   sellingPriceForDefaultUnit,
 } from "../utils/saleUnits.js";
+
+function routeNumber(ref, defaultValue) {
+  return {
+    ref,
+    default: defaultValue,
+    parse: (s) => {
+      const n = Number(s);
+      return Number.isFinite(n) ? n : defaultValue;
+    },
+    serialize: (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n === defaultValue) return undefined;
+      return String(n);
+    },
+  };
+}
 
 const message = useMessage();
 const dialog = useDialog();
@@ -139,6 +153,24 @@ const unitFilterOptions = UNIT_LISTING_FILTER_OPTIONS;
 const createdRangePreset = ref("all");
 const createdFrom = ref(null);
 const createdTo = ref(null);
+const stockFilterEnabled = ref(false);
+const stockOp = ref("lte");
+const stockQty = ref(10);
+const priceFilterEnabled = ref(false);
+const priceOp = ref("gte");
+const priceQty = ref(0);
+const costFilterEnabled = ref(false);
+const costOp = ref("gt");
+const costQty = ref(0);
+const keywordContains = ref("");
+const keywordFields = ref([...DEFAULT_KEYWORD_FIELDS]);
+const vendorPresence = ref("all");
+const barcodePresence = ref("all");
+const vendorCatalogKeyword = ref("");
+const vendorCountEnabled = ref(false);
+const vendorCountOp = ref("lt");
+const vendorCountN = ref(5);
+
 const hasActiveFilters = computed(
   () =>
     Boolean(search.value.trim()) ||
@@ -148,20 +180,17 @@ const hasActiveFilters = computed(
     lowStockOnly.value ||
     !activeOnly.value ||
     unitFilter.value !== "all" ||
-    dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
+    dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value) ||
+    stockFilterEnabled.value ||
+    priceFilterEnabled.value ||
+    (canSeePurchasePrices.value && costFilterEnabled.value) ||
+    Boolean(keywordContains.value.trim()) ||
+    vendorPresence.value !== "all" ||
+    barcodePresence.value !== "all" ||
+    Boolean(vendorCatalogKeyword.value.trim()) ||
+    vendorCountEnabled.value
 );
-/** Secondary filters only (shown inside More filters) — drives badge count. */
-const moreFiltersCount = computed(() => {
-  let n = 0;
-  if ((categoryFilter.value?.length ?? 0) > 0) n += 1;
-  if (tagsDbReady.value && (tagFilter.value?.length ?? 0) > 0) n += 1;
-  if (unitFilter.value !== "all") n += 1;
-  if (lowStockOnly.value) n += 1;
-  if (!activeOnly.value) n += 1;
-  if (dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)) n += 1;
-  return n;
-});
-const showMoreFilters = ref(false);
+
 function clearFilters() {
   search.value = "";
   vendorFilter.value = [];
@@ -173,6 +202,23 @@ function clearFilters() {
   createdRangePreset.value = "all";
   createdFrom.value = null;
   createdTo.value = null;
+  stockFilterEnabled.value = false;
+  stockOp.value = "lte";
+  stockQty.value = 10;
+  priceFilterEnabled.value = false;
+  priceOp.value = "gte";
+  priceQty.value = 0;
+  costFilterEnabled.value = false;
+  costOp.value = "gt";
+  costQty.value = 0;
+  keywordContains.value = "";
+  keywordFields.value = [...DEFAULT_KEYWORD_FIELDS];
+  vendorPresence.value = "all";
+  barcodePresence.value = "all";
+  vendorCatalogKeyword.value = "";
+  vendorCountEnabled.value = false;
+  vendorCountOp.value = "lt";
+  vendorCountN.value = 5;
   sortKey.value = null;
   sortOrder.value = null;
   page.value = 1;
@@ -283,6 +329,41 @@ const { routeSyncing } = useRouteQuerySync(
       serialize: (v) => (v ? undefined : "all"),
     },
     unit: routeQuery.enumValue(unitFilter, "all", ["all", "piece", "pack", "box", "multi"]),
+    stock: routeQuery.booleanFlag(stockFilterEnabled, false),
+    stockOp: routeQuery.enumValue(stockOp, "lte", ["lt", "lte", "eq", "gte", "gt"]),
+    stockQty: routeNumber(stockQty, 10),
+    price: routeQuery.booleanFlag(priceFilterEnabled, false),
+    priceOp: routeQuery.enumValue(priceOp, "gte", ["lt", "lte", "eq", "gte", "gt"]),
+    priceQty: routeNumber(priceQty, 0),
+    cost: routeQuery.booleanFlag(costFilterEnabled, false),
+    costOp: routeQuery.enumValue(costOp, "gt", ["lt", "lte", "eq", "gte", "gt"]),
+    costQty: routeNumber(costQty, 0),
+    kw: { ...routeQuery.string(keywordContains), debounceMs: 300 },
+    kwFields: {
+      ref: keywordFields,
+      default: [...DEFAULT_KEYWORD_FIELDS],
+      parse: (s) => {
+        const allowed = new Set(DEFAULT_KEYWORD_FIELDS);
+        const list = String(s || "")
+          .split(",")
+          .map((x) => x.trim())
+          .filter((x) => allowed.has(x));
+        return list.length ? list : [...DEFAULT_KEYWORD_FIELDS];
+      },
+      serialize: (v) => {
+        const list = (Array.isArray(v) ? v : []).filter(Boolean).map(String);
+        const def = DEFAULT_KEYWORD_FIELDS.join(",");
+        const cur = list.join(",");
+        if (!list.length || cur === def) return undefined;
+        return cur;
+      },
+    },
+    vendorPresence: routeQuery.enumValue(vendorPresence, "all", ["all", "has", "missing"]),
+    barcodePresence: routeQuery.enumValue(barcodePresence, "all", ["all", "has", "missing"]),
+    vendorKw: { ...routeQuery.string(vendorCatalogKeyword), debounceMs: 300 },
+    vendorCount: routeQuery.booleanFlag(vendorCountEnabled, false),
+    vendorCountOp: routeQuery.enumValue(vendorCountOp, "lt", ["lt", "lte", "eq", "gte", "gt"]),
+    vendorCountN: routeNumber(vendorCountN, 5),
     sort: routeQuery.optionalString(sortKey),
     order: routeQuery.optionalString(sortOrder),
   },
@@ -676,6 +757,23 @@ async function load() {
       createdRangePreset: createdRangePreset.value,
       createdFrom: createdFrom.value,
       createdTo: createdTo.value,
+      stockFilterEnabled: stockFilterEnabled.value,
+      stockOp: stockOp.value,
+      stockQty: stockQty.value,
+      priceFilterEnabled: priceFilterEnabled.value,
+      priceOp: priceOp.value,
+      priceQty: priceQty.value,
+      costFilterEnabled: canSeePurchasePrices.value && costFilterEnabled.value,
+      costOp: costOp.value,
+      costQty: costQty.value,
+      keywordContains: keywordContains.value,
+      keywordFields: keywordFields.value,
+      vendorPresence: vendorPresence.value,
+      barcodePresence: barcodePresence.value,
+      vendorCatalogKeyword: vendorCatalogKeyword.value,
+      vendorCountEnabled: vendorCountEnabled.value,
+      vendorCountOp: vendorCountOp.value,
+      vendorCountN: vendorCountN.value,
       page: page.value,
       pageSize: pageSize.value,
       sortKey: sortKey.value,
@@ -999,7 +1097,32 @@ function onPageSizeChange(s) {
 }
 
 watch(
-  [vendorFilter, categoryFilter, tagFilter, lowStockOnly, activeOnly, unitFilter, createdRangePreset, createdFrom, createdTo],
+  [
+    vendorFilter,
+    categoryFilter,
+    tagFilter,
+    lowStockOnly,
+    activeOnly,
+    unitFilter,
+    createdRangePreset,
+    createdFrom,
+    createdTo,
+    stockFilterEnabled,
+    stockOp,
+    stockQty,
+    priceFilterEnabled,
+    priceOp,
+    priceQty,
+    costFilterEnabled,
+    costOp,
+    costQty,
+    keywordFields,
+    vendorPresence,
+    barcodePresence,
+    vendorCountEnabled,
+    vendorCountOp,
+    vendorCountN,
+  ],
   () => {
     if (routeSyncing.value) return;
     clearRowSelection();
@@ -1009,7 +1132,7 @@ watch(
 );
 
 let searchTimer;
-watch(search, () => {
+watch([search, keywordContains, vendorCatalogKeyword], () => {
   if (routeSyncing.value) return;
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
@@ -1098,9 +1221,6 @@ onUnmounted(() => {
           max-tag-count="responsive"
           style="min-width: 200px; max-width: 320px"
         />
-        <NButton :type="moreFiltersCount ? 'warning' : 'default'" @click="showMoreFilters = true">
-          More filters{{ moreFiltersCount ? ` (${moreFiltersCount})` : "" }}
-        </NButton>
         <NButtonGroup v-if="canManageProducts">
           <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
             Add product
@@ -1125,57 +1245,39 @@ onUnmounted(() => {
       </NSpace>
     </div>
 
-    <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
-      <NDrawerContent title="More filters" closable :native-scrollbar="false">
-        <div class="more-filters">
-          <NSelect
-            v-model:value="categoryFilter"
-            :options="categoryOptions"
-            placeholder="Category"
-            multiple
-            clearable
-            filterable
-            max-tag-count="responsive"
-            style="width: 100%"
-          />
-          <NSelect
-            v-if="tagsDbReady"
-            v-model:value="tagFilter"
-            :options="tagOptions"
-            placeholder="Tag"
-            multiple
-            clearable
-            filterable
-            max-tag-count="responsive"
-            style="width: 100%"
-          />
-          <NSelect
-            v-model:value="unitFilter"
-            :options="unitFilterOptions"
-            placeholder="Unit"
-            style="width: 100%"
-          />
-          <CreatedDateFilter
-            v-model:preset="createdRangePreset"
-            v-model:from="createdFrom"
-            v-model:to="createdTo"
-            stacked
-          />
-          <div class="more-filters__toggles">
-            <FilterToggleRow
-              v-model="lowStockOnly"
-              label="Low stock only"
-              hint="Show products at or below threshold"
-            />
-            <FilterToggleRow
-              v-model="activeOnly"
-              label="Active only"
-              hint="Hide inactive / soft-deleted products"
-            />
-          </div>
-        </div>
-      </NDrawerContent>
-    </NDrawer>
+    <ProductFilterRules
+      v-model:category-filter="categoryFilter"
+      v-model:tag-filter="tagFilter"
+      v-model:unit-filter="unitFilter"
+      v-model:created-range-preset="createdRangePreset"
+      v-model:created-from="createdFrom"
+      v-model:created-to="createdTo"
+      v-model:low-stock-only="lowStockOnly"
+      v-model:active-only="activeOnly"
+      v-model:stock-filter-enabled="stockFilterEnabled"
+      v-model:stock-op="stockOp"
+      v-model:stock-qty="stockQty"
+      v-model:price-filter-enabled="priceFilterEnabled"
+      v-model:price-op="priceOp"
+      v-model:price-qty="priceQty"
+      v-model:cost-filter-enabled="costFilterEnabled"
+      v-model:cost-op="costOp"
+      v-model:cost-qty="costQty"
+      v-model:keyword-contains="keywordContains"
+      v-model:keyword-fields="keywordFields"
+      v-model:vendor-presence="vendorPresence"
+      v-model:barcode-presence="barcodePresence"
+      v-model:vendor-catalog-keyword="vendorCatalogKeyword"
+      v-model:vendor-count-enabled="vendorCountEnabled"
+      v-model:vendor-count-op="vendorCountOp"
+      v-model:vendor-count-n="vendorCountN"
+      :can-see-cost="canSeePurchasePrices"
+      :tags-ready="tagsDbReady"
+      :category-options="categoryOptions"
+      :tag-options="tagOptions"
+      :unit-options="unitFilterOptions"
+    />
+
     <div class="app-table-panel">
       <NDataTable
         v-model:checked-row-keys="checkedRowKeys"

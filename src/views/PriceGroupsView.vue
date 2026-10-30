@@ -11,14 +11,11 @@ import {
   NCard,
   NRadioGroup,
   NRadio,
-  NDrawer,
-  NDrawerContent,
   useMessage,
   useDialog,
 } from "naive-ui";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
-import CreatedDateFilter from "../components/CreatedDateFilter.vue";
-import FilterToggleRow from "../components/FilterToggleRow.vue";
+import RuleFilterBar from "../components/RuleFilterBar.vue";
 import PricingHelperCard from "../components/PricingHelperCard.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
@@ -48,7 +45,9 @@ import {
   resolveSaleUnit,
 } from "../utils/saleUnits.js";
 import { matchesSearchFields } from "../utils/textSearch.js";
+import { createdDateField } from "../utils/ruleFilterOps.js";
 import {
+  DATE_RANGE_PRESET_OPTIONS,
   dateRangeFilterActive,
   isTimestampInRange,
   resolveDateRange,
@@ -155,16 +154,64 @@ const hasActiveFilters = computed(
     dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
 );
 
-/** Secondary filters only (inside More filters) — drives badge count. */
-const moreFiltersCount = computed(() => {
-  let n = 0;
-  if (unitFilter.value !== "all") n += 1;
-  if (!activeOnly.value) n += 1;
-  if (!includeZeroStock.value) n += 1;
-  if (dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)) n += 1;
-  return n;
-});
-const showMoreFilters = ref(false);
+const ruleFields = computed(() => [
+  {
+    id: "unit",
+    label: "Unit type",
+    valueType: "select",
+    options: () => unitFilterOptions.filter((o) => o.value !== "all"),
+    occupied: () => unitFilter.value !== "all",
+    chipText: () => {
+      const u = unitFilterOptions.find((o) => o.value === unitFilter.value);
+      return `Unit type is ${u?.label || unitFilter.value}`;
+    },
+    getDraft: () => ({ select: unitFilter.value }),
+    apply: (d) => {
+      if (!d.select) return false;
+      unitFilter.value = d.select;
+    },
+    clear: () => {
+      unitFilter.value = "all";
+    },
+  },
+  createdDateField({
+    preset: createdRangePreset,
+    from: createdFrom,
+    to: createdTo,
+    dateRangeFilterActive,
+    DATE_RANGE_PRESET_OPTIONS,
+  }),
+  {
+    id: "includeInactive",
+    label: "Inactive products",
+    hint: "Include deactivated items",
+    valueType: "flag",
+    occupied: () => !activeOnly.value,
+    chipText: () => "Inactive products is true",
+    getDraft: () => ({}),
+    apply: () => {
+      activeOnly.value = false;
+    },
+    clear: () => {
+      activeOnly.value = true;
+    },
+  },
+  {
+    id: "hideZeroStock",
+    label: "Hide zero stock",
+    hint: "Hide products with 0 on hand",
+    valueType: "flag",
+    occupied: () => !includeZeroStock.value,
+    chipText: () => "Hide zero stock is true",
+    getDraft: () => ({}),
+    apply: () => {
+      includeZeroStock.value = false;
+    },
+    clear: () => {
+      includeZeroStock.value = true;
+    },
+  },
+]);
 
 function clearFilters() {
   search.value = "";
@@ -1130,47 +1177,12 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
           placeholder="Vendor"
           style="min-width: 200px; max-width: 320px"
         />
-        <NButton :type="moreFiltersCount ? 'warning' : 'default'" @click="showMoreFilters = true">
-          More filters{{ moreFiltersCount ? ` (${moreFiltersCount})` : "" }}
-        </NButton>
         <NButton :disabled="!supabaseConfigured" :loading="loading" @click="load">Refresh</NButton>
         <ClearFiltersButton v-if="hasActiveFilters" :disabled="false" @clear="clearFilters" />
       </NSpace>
     </div>
 
-    <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
-      <NDrawerContent title="More filters" closable :native-scrollbar="false">
-        <div class="more-filters">
-          <NSelect
-            v-model:value="unitFilter"
-            :options="unitFilterOptions"
-            placeholder="Unit"
-            style="width: 100%"
-          />
-          <CreatedDateFilter
-            v-model:preset="createdRangePreset"
-            v-model:from="createdFrom"
-            v-model:to="createdTo"
-            stacked
-          />
-          <NText depth="3" class="more-filters__hint">
-            New sale applies to pack price when pack is set, else piece.
-          </NText>
-          <div class="more-filters__toggles">
-            <FilterToggleRow
-              v-model="activeOnly"
-              label="Active only"
-              hint="Hide inactive products"
-            />
-            <FilterToggleRow
-              v-model="includeZeroStock"
-              label="Include zero stock"
-              hint="Show products with 0 on hand"
-            />
-          </div>
-        </div>
-      </NDrawerContent>
-    </NDrawer>
+    <RuleFilterBar :fields="ruleFields" />
 
     <div class="pg-sticky" :class="{ 'pg-sticky--pending': summary.changedGroups }">
       <div class="pg-sticky-metrics">

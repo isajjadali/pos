@@ -10,10 +10,7 @@ import {
   NFormItem,
   NSwitch,
   NTag,
-  NSelect,
   NAlert,
-  NDrawer,
-  NDrawerContent,
   NDropdown,
   NButtonGroup,
   NIcon,
@@ -22,8 +19,7 @@ import {
 } from "naive-ui";
 import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
-import CreatedDateFilter from "../components/CreatedDateFilter.vue";
-import FilterToggleRow from "../components/FilterToggleRow.vue";
+import RuleFilterBar from "../components/RuleFilterBar.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
@@ -41,7 +37,8 @@ import {
   paginationTotalPrefix,
 } from "../utils/tableColumns.js";
 import { toTitleCase } from "../utils/titleCase.js";
-import { dateRangeFilterActive } from "../utils/dateRange.js";
+import { DATE_RANGE_PRESET_OPTIONS, dateRangeFilterActive } from "../utils/dateRange.js";
+import { createdDateField } from "../utils/ruleFilterOps.js";
 import { PRODUCT_CATALOG_UPDATED } from "../services/productCatalog.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
 
@@ -60,6 +57,13 @@ const sortOrder = ref(null);
 const createdRangePreset = ref("all");
 const createdFrom = ref(null);
 const createdTo = ref(null);
+
+const productFilterOptions = [
+  { label: "All vendors", value: "all" },
+  { label: "No products (safe to delete)", value: "none" },
+  { label: "Has products", value: "has" },
+];
+
 const hasActiveFilters = computed(
   () =>
     Boolean(search.value.trim()) ||
@@ -69,14 +73,52 @@ const hasActiveFilters = computed(
     sortOrder.value ||
     dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
 );
-/** Secondary filters only (inside More filters) — drives badge count. */
-const moreFiltersCount = computed(() => {
-  let n = 0;
-  if (activeOnly.value) n += 1;
-  if (dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)) n += 1;
-  return n;
-});
-const showMoreFilters = ref(false);
+
+const ruleFields = computed(() => [
+  {
+    id: "products",
+    label: "Products",
+    hint: "Whether this vendor has products linked",
+    valueType: "select",
+    options: () => productFilterOptions.filter((o) => o.value !== "all"),
+    occupied: () => productFilter.value !== "all",
+    chipText: () => {
+      const o = productFilterOptions.find((x) => x.value === productFilter.value);
+      return `Products is ${o?.label || productFilter.value}`;
+    },
+    getDraft: () => ({ select: productFilter.value }),
+    apply: (d) => {
+      if (!d.select) return false;
+      productFilter.value = d.select;
+    },
+    clear: () => {
+      productFilter.value = "all";
+    },
+  },
+  createdDateField({
+    preset: createdRangePreset,
+    from: createdFrom,
+    to: createdTo,
+    dateRangeFilterActive,
+    DATE_RANGE_PRESET_OPTIONS,
+  }),
+  {
+    id: "activeOnly",
+    label: "Active only",
+    hint: "Hide inactive vendors",
+    valueType: "flag",
+    occupied: () => activeOnly.value,
+    chipText: () => "Active only is true",
+    getDraft: () => ({}),
+    apply: () => {
+      activeOnly.value = true;
+    },
+    clear: () => {
+      activeOnly.value = false;
+    },
+  },
+]);
+
 function clearFilters() {
   search.value = "";
   productFilter.value = "all";
@@ -123,12 +165,6 @@ const { routeSyncing } = useRouteQuerySync(
   { onApplied: () => loadFromQuery() }
 );
 const checkedRowKeys = ref([]);
-
-const productFilterOptions = [
-  { label: "All vendors", value: "all" },
-  { label: "No products (safe to delete)", value: "none" },
-  { label: "Has products", value: "has" },
-];
 
 const showModal = ref(false);
 const editingId = ref(null);
@@ -404,20 +440,12 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
       type="info"
       style="margin-bottom: 12px"
     >
-      {{ summary.withoutProducts }} vendor(s) have no products — use filter
-      <strong>No products (safe to delete)</strong> to clean up unused vendors.
+      {{ summary.withoutProducts }} vendor(s) have no products — Add filter →
+      <strong>Products is No products (safe to delete)</strong> to clean up unused vendors.
     </NAlert>
     <div class="app-toolbar">
       <NSpace class="app-filter-stack" align="center" wrap>
         <NInput v-model:value="search" placeholder="Search vendor name" clearable style="width: 260px" />
-        <NSelect
-          v-model:value="productFilter"
-          :options="productFilterOptions"
-          style="width: 240px"
-        />
-        <NButton :type="moreFiltersCount ? 'warning' : 'default'" @click="showMoreFilters = true">
-          More filters{{ moreFiltersCount ? ` (${moreFiltersCount})` : "" }}
-        </NButton>
         <NButtonGroup>
           <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
             Add vendor
@@ -442,25 +470,7 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
       </NSpace>
     </div>
 
-    <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
-      <NDrawerContent title="More filters" closable :native-scrollbar="false">
-        <div class="more-filters">
-          <CreatedDateFilter
-            v-model:preset="createdRangePreset"
-            v-model:from="createdFrom"
-            v-model:to="createdTo"
-            stacked
-          />
-          <div class="more-filters__toggles">
-            <FilterToggleRow
-              v-model="activeOnly"
-              label="Active only"
-              hint="Hide inactive vendors"
-            />
-          </div>
-        </div>
-      </NDrawerContent>
-    </NDrawer>
+    <RuleFilterBar :fields="ruleFields" />
     <div class="app-table-panel">
       <NDataTable
         v-model:checked-row-keys="checkedRowKeys"

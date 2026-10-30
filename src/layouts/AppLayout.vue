@@ -100,6 +100,10 @@ const activeKey = computed(() => route.name);
 function onMenuSelect(key) {
   // Parent group keys are not routes — ignore
   if (String(key).startsWith("nav-")) return;
+  // Blur so the menu item doesn't keep a text caret (|) focus blink
+  if (typeof document !== "undefined" && document.activeElement?.blur) {
+    document.activeElement.blur();
+  }
   router.push({ name: key });
 }
 
@@ -264,6 +268,21 @@ const mobilePageTitle = computed(() => {
 }
 .app-sider :deep(.n-menu-item-content) {
   overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  caret-color: transparent;
+  cursor: pointer;
+}
+.app-sider :deep(.n-menu-item-content *),
+.app-sider :deep(.n-submenu-children .n-menu-item-content),
+.app-sider :deep(.n-menu .n-menu-item-content-header) {
+  user-select: none;
+  -webkit-user-select: none;
+  caret-color: transparent;
+}
+.app-sider :deep(.n-menu-item-content:focus),
+.app-sider :deep(.n-menu-item-content:focus-visible) {
+  outline: none;
 }
 .sider-inner {
   display: flex;

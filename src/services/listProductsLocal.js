@@ -3,6 +3,13 @@ import { useProductCacheStore } from "../stores/productCache.js";
 import { useMetaCacheStore } from "../stores/metaCache.js";
 import { matchesSearchFields } from "../utils/textSearch.js";
 import { isTimestampInRange, resolveDateRange } from "../utils/dateRange.js";
+import {
+  DEFAULT_KEYWORD_FIELDS,
+  matchesCompareOp,
+  matchesKeywordFields,
+  matchesPresence,
+  resolveVendorIdsLocal,
+} from "../utils/productAdvancedFilters.js";
 
 /**
  * Offline / cache-backed product listing (same shape as listProducts).
@@ -26,6 +33,14 @@ function normalizeFilterTags(tags, tag) {
   ];
 }
 
+function normalizeKeywordFields(fields) {
+  const allowed = new Set(DEFAULT_KEYWORD_FIELDS);
+  const list = (Array.isArray(fields) ? fields : [])
+    .map(String)
+    .filter((f) => allowed.has(f));
+  return list.length ? list : [...DEFAULT_KEYWORD_FIELDS];
+}
+
 export function listProductsLocal({
   search = "",
   vendorId = null,
@@ -40,6 +55,23 @@ export function listProductsLocal({
   createdRangePreset = "all",
   createdFrom = null,
   createdTo = null,
+  stockFilterEnabled = false,
+  stockOp = "lte",
+  stockQty = null,
+  priceFilterEnabled = false,
+  priceOp = "gte",
+  priceQty = null,
+  costFilterEnabled = false,
+  costOp = "gt",
+  costQty = null,
+  keywordContains = "",
+  keywordFields = null,
+  vendorPresence = "all",
+  barcodePresence = "all",
+  vendorCatalogKeyword = "",
+  vendorCountEnabled = false,
+  vendorCountOp = "lt",
+  vendorCountN = null,
   page = 1,
   pageSize = 20,
   sortKey = null,
@@ -62,12 +94,34 @@ export function listProductsLocal({
   }
 
   const term = String(search || "").trim().toLowerCase();
-  const vendorList = normalizeFilterIds(vendorIds, vendorId);
+  let vendorList = normalizeFilterIds(vendorIds, vendorId);
   const categoryList = normalizeFilterIds(categoryIds, categoryId);
   const tagList = normalizeFilterTags(tags, tag);
-  const vendorSet = vendorList.length ? new Set(vendorList) : null;
   const categorySet = categoryList.length ? new Set(categoryList) : null;
   const uf = String(unitFilter || "all");
+
+  const ruleVendorIds = resolveVendorIdsLocal(products, {
+    catalogKeyword: vendorCatalogKeyword,
+    countOp: vendorCountEnabled ? vendorCountOp : null,
+    countN: vendorCountEnabled ? Number(vendorCountN) : null,
+  });
+  if (ruleVendorIds) {
+    if (!ruleVendorIds.length) return { rows: [], total: 0 };
+    if (vendorList.length) {
+      const allowed = new Set(vendorList);
+      vendorList = ruleVendorIds.filter((id) => allowed.has(id));
+      if (!vendorList.length) return { rows: [], total: 0 };
+    } else {
+      vendorList = ruleVendorIds;
+    }
+  }
+  const vendorSet = vendorList.length ? new Set(vendorList) : null;
+
+  const kwFields = normalizeKeywordFields(keywordFields);
+  const kw = String(keywordContains ?? "").trim();
+  const stockN = Number(stockQty);
+  const priceN = Number(priceQty);
+  const costN = Number(costQty);
 
   const filtered = [];
   for (let i = 0; i < products.length; i++) {
@@ -104,6 +158,32 @@ export function listProductsLocal({
     ) {
       continue;
     }
+
+    if (
+      stockFilterEnabled &&
+      Number.isFinite(stockN) &&
+      !matchesCompareOp(Number(p.current_stock ?? 0), stockOp, stockN)
+    ) {
+      continue;
+    }
+    if (
+      priceFilterEnabled &&
+      Number.isFinite(priceN) &&
+      !matchesCompareOp(Number(p.selling_price ?? 0), priceOp, priceN)
+    ) {
+      continue;
+    }
+    if (
+      costFilterEnabled &&
+      Number.isFinite(costN) &&
+      !matchesCompareOp(Number(p.weighted_avg_cost ?? 0), costOp, costN)
+    ) {
+      continue;
+    }
+
+    if (kw && !matchesKeywordFields(p, kw, kwFields)) continue;
+    if (!matchesPresence(p.vendor_id, vendorPresence)) continue;
+    if (!matchesPresence(p.barcode, barcodePresence)) continue;
 
     filtered.push(p);
   }

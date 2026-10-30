@@ -18,6 +18,11 @@ import { useMetaCacheStore } from "../stores/metaCache.js";
 import { syncProductCatalogAfterWrite } from "../utils/cacheSync.js";
 import { asyncPool } from "../utils/asyncPool.js";
 import { postgrestIlikeOr } from "../utils/textSearch.js";
+import {
+  COMPARE_OPS,
+  DEFAULT_KEYWORD_FIELDS,
+  applyPostgrestCompare,
+} from "../utils/productAdvancedFilters.js";
 
 async function syncCatalog() {
   await syncProductCatalogAfterWrite();
@@ -126,6 +131,39 @@ function normalizeFilterTags(tags, tag) {
   ];
 }
 
+function normalizeCompareOp(op) {
+  const s = String(op || "").toLowerCase();
+  return COMPARE_OPS.includes(s) ? s : "lte";
+}
+
+function normalizePresence(mode) {
+  const s = String(mode || "all");
+  return s === "has" || s === "missing" ? s : "all";
+}
+
+function normalizeKeywordFields(fields) {
+  const allowed = new Set(DEFAULT_KEYWORD_FIELDS);
+  const list = (Array.isArray(fields) ? fields : [])
+    .map(String)
+    .filter((f) => allowed.has(f));
+  return list.length ? list : [...DEFAULT_KEYWORD_FIELDS];
+}
+
+async function resolveVendorIdsFromRules(sb, { catalogKeyword, countEnabled, countOp, countN }) {
+  const kw = String(catalogKeyword ?? "").trim();
+  const useCount = Boolean(countEnabled) && Number.isFinite(Number(countN));
+  if (!kw && !useCount) return null;
+
+  const { data, error } = await sb.rpc("resolve_product_filter_vendor_ids", {
+    p_catalog_keyword: kw || null,
+    p_count_op: useCount ? normalizeCompareOp(countOp) : null,
+    p_count_n: useCount ? Math.floor(Number(countN)) : null,
+  });
+  if (error) throw error;
+  if (data == null) return null;
+  return (Array.isArray(data) ? data : []).map(String);
+}
+
 async function listProductsOnline({
   search = "",
   vendorId = null,
@@ -140,6 +178,23 @@ async function listProductsOnline({
   createdRangePreset = "all",
   createdFrom = null,
   createdTo = null,
+  stockFilterEnabled = false,
+  stockOp = "lte",
+  stockQty = null,
+  priceFilterEnabled = false,
+  priceOp = "gte",
+  priceQty = null,
+  costFilterEnabled = false,
+  costOp = "gt",
+  costQty = null,
+  keywordContains = "",
+  keywordFields = null,
+  vendorPresence = "all",
+  barcodePresence = "all",
+  vendorCatalogKeyword = "",
+  vendorCountEnabled = false,
+  vendorCountOp = "lt",
+  vendorCountN = null,
   page = 1,
   pageSize = 20,
   sortKey = null,
@@ -149,10 +204,27 @@ async function listProductsOnline({
   const from = (page - 1) * pageSize;
   const to = from + pageSize - 1;
   const ascending = sortOrder === "ascend";
-  const vendorList = normalizeFilterIds(vendorIds, vendorId);
+  let vendorList = normalizeFilterIds(vendorIds, vendorId);
   const categoryList = normalizeFilterIds(categoryIds, categoryId);
   const tagList = normalizeFilterTags(tags, tag);
   const createdRange = resolveDateRange(createdRangePreset, createdFrom, createdTo);
+
+  const ruleVendorIds = await resolveVendorIdsFromRules(sb, {
+    catalogKeyword: vendorCatalogKeyword,
+    countEnabled: vendorCountEnabled,
+    countOp: vendorCountOp,
+    countN: vendorCountN,
+  });
+  if (ruleVendorIds) {
+    if (!ruleVendorIds.length) return { rows: [], total: 0 };
+    if (vendorList.length) {
+      const allowed = new Set(vendorList);
+      vendorList = ruleVendorIds.filter((id) => allowed.has(id));
+      if (!vendorList.length) return { rows: [], total: 0 };
+    } else {
+      vendorList = ruleVendorIds;
+    }
+  }
 
   let query = sb.from("products").select("*, vendors(name), categories(name)", { count: "exact" });
   query = applyTimestampFilter(query, "created_at", createdRange);
@@ -197,6 +269,46 @@ async function listProductsOnline({
     if (tagList.length === 1) query = query.contains("tags", [tagList[0]]);
     else query = query.overlaps("tags", tagList);
   }
+
+  if (stockFilterEnabled && Number.isFinite(Number(stockQty))) {
+    query = applyPostgrestCompare(
+      query,
+      "current_stock",
+      normalizeCompareOp(stockOp),
+      Number(stockQty)
+    );
+  }
+  if (priceFilterEnabled && Number.isFinite(Number(priceQty))) {
+    query = applyPostgrestCompare(
+      query,
+      "selling_price",
+      normalizeCompareOp(priceOp),
+      Number(priceQty)
+    );
+  }
+  if (costFilterEnabled && Number.isFinite(Number(costQty))) {
+    query = applyPostgrestCompare(
+      query,
+      "weighted_avg_cost",
+      normalizeCompareOp(costOp),
+      Number(costQty)
+    );
+  }
+
+  const kw = String(keywordContains ?? "").trim();
+  if (kw) {
+    const cols = normalizeKeywordFields(keywordFields);
+    const orFilter = postgrestIlikeOr(cols, kw);
+    if (orFilter) query = query.or(orFilter);
+  }
+
+  const vPresence = normalizePresence(vendorPresence);
+  if (vPresence === "has") query = query.not("vendor_id", "is", null);
+  else if (vPresence === "missing") query = query.is("vendor_id", null);
+
+  const bPresence = normalizePresence(barcodePresence);
+  if (bPresence === "has") query = query.not("barcode", "is", null).neq("barcode", "");
+  else if (bPresence === "missing") query = query.or('barcode.is.null,barcode.eq.""');
 
   const { data, error, count } = await query;
   if (error) throw error;

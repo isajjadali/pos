@@ -10,8 +10,6 @@ import {
   NRadio,
   NSelect,
   NText,
-  NDrawer,
-  NDrawerContent,
   NDropdown,
   NButtonGroup,
   NIcon,
@@ -19,15 +17,17 @@ import {
 } from "naive-ui";
 import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
-import CreatedDateFilter from "../components/CreatedDateFilter.vue";
-import FilterToggleRow from "../components/FilterToggleRow.vue";
+import RuleFilterBar from "../components/RuleFilterBar.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import {
+  DATE_RANGE_PRESET_OPTIONS,
   dateRangeFilterActive,
   isTimestampInRange,
   resolveDateRange,
 } from "../utils/dateRange.js";
+import { matchesCompareOp } from "../utils/productAdvancedFilters.js";
+import { COMPARE_OPS, createdDateField, opLabel } from "../utils/ruleFilterOps.js";
 import {
   listProductsForPrinting,
   reconcilePrint,
@@ -135,7 +135,7 @@ const { routeSyncing } = useRouteQuerySync(
     pending: routeQuery.enumValue(pendingFilter, "pending", ["pending", "none", "all"]),
     stock: routeQuery.booleanFlag(stockFilterEnabled, false),
     stockQty: routeQuery.positiveInt(stockFilterQty, 5),
-    stockOp: routeQuery.enumValue(stockFilterMode, "lte", ["lte", "gte", "lt", "gt"]),
+    stockOp: routeQuery.enumValue(stockFilterMode, "lte", ["lt", "lte", "eq", "gte", "gt"]),
     unit: routeQuery.enumValue(unitFilter, "all", ["all", "piece", "pack", "box", "multi"]),
     mode: routeQuery.enumValue(printMode, "unprinted", ["unprinted", "current_stock", "custom"]),
     customQty: routeQuery.positiveInt(customQty, 1),
@@ -156,16 +156,57 @@ const pendingFilterOptions = [
   { label: "All products", value: "all" },
 ];
 
-const stockFilterModeOptions = [
-  { label: "At or below (≤)", value: "lte" },
-  { label: "At or above (≥)", value: "gte" },
-  { label: "Less than (<)", value: "lt" },
-  { label: "Greater than (>)", value: "gt" },
-];
-
 const createdRangePreset = ref("all");
 const createdFrom = ref(null);
 const createdTo = ref(null);
+
+const ruleFields = computed(() => [
+  {
+    id: "stock",
+    label: "Stock",
+    hint: "On-hand quantity",
+    valueType: "number",
+    ops: COMPARE_OPS,
+    defaultNumber: 5,
+    occupied: () => stockFilterEnabled.value,
+    chipText: () => `Stock ${opLabel(stockFilterMode.value)} ${stockFilterQty.value ?? ""}`,
+    getDraft: () => ({ op: stockFilterMode.value, number: stockFilterQty.value }),
+    apply: (d) => {
+      stockFilterMode.value = d.op;
+      stockFilterQty.value = Math.floor(Number(d.number) || 0);
+      stockFilterEnabled.value = true;
+    },
+    clear: () => {
+      stockFilterEnabled.value = false;
+    },
+  },
+  {
+    id: "unit",
+    label: "Unit type",
+    valueType: "select",
+    options: () => unitFilterOptions.filter((o) => o.value !== "all"),
+    occupied: () => unitFilter.value !== "all",
+    chipText: () => {
+      const u = unitFilterOptions.find((o) => o.value === unitFilter.value);
+      return `Unit type is ${u?.label || unitFilter.value}`;
+    },
+    getDraft: () => ({ select: unitFilter.value }),
+    apply: (d) => {
+      if (!d.select) return false;
+      unitFilter.value = d.select;
+    },
+    clear: () => {
+      unitFilter.value = "all";
+    },
+  },
+  createdDateField({
+    preset: createdRangePreset,
+    from: createdFrom,
+    to: createdTo,
+    dateRangeFilterActive,
+    DATE_RANGE_PRESET_OPTIONS,
+  }),
+]);
 
 const hasActiveFilters = computed(
   () =>
@@ -175,16 +216,6 @@ const hasActiveFilters = computed(
     unitFilter.value !== "all" ||
     dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
 );
-
-/** Secondary filters only (inside More filters) — drives badge count. */
-const moreFiltersCount = computed(() => {
-  let n = 0;
-  if (unitFilter.value !== "all") n += 1;
-  if (stockFilterEnabled.value) n += 1;
-  if (dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)) n += 1;
-  return n;
-});
-const showMoreFilters = ref(false);
 
 function clearFilters() {
   search.value = "";
@@ -240,12 +271,9 @@ const filteredRows = computed(() => {
   if (stockFilterEnabled.value) {
     const n = Math.floor(Number(stockFilterQty.value));
     if (Number.isFinite(n)) {
-      const stock = (r) => r.current_stock ?? 0;
-      const mode = stockFilterMode.value;
-      if (mode === "lte") list = list.filter((r) => stock(r) <= n);
-      else if (mode === "gte") list = list.filter((r) => stock(r) >= n);
-      else if (mode === "lt") list = list.filter((r) => stock(r) < n);
-      else if (mode === "gt") list = list.filter((r) => stock(r) > n);
+      list = list.filter((r) =>
+        matchesCompareOp(Number(r.current_stock ?? 0), stockFilterMode.value, n)
+      );
     }
   }
   list = list.filter((r) => isTimestampInRange(r.created_at, createdRange));
@@ -646,9 +674,6 @@ onMounted(() => {
           :options="pendingFilterOptions"
           style="width: 200px"
         />
-        <NButton :type="moreFiltersCount ? 'warning' : 'default'" @click="showMoreFilters = true">
-          More filters{{ moreFiltersCount ? ` (${moreFiltersCount})` : "" }}
-        </NButton>
         <NButtonGroup>
           <NButton type="primary" :loading="printing" :disabled="printing" @click="printSelected">
             Print selected{{ selected.length ? ` (${selected.length})` : "" }}
@@ -691,43 +716,7 @@ onMounted(() => {
       </NSpace>
     </div>
 
-    <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
-      <NDrawerContent title="More filters" closable :native-scrollbar="false">
-        <div class="more-filters">
-          <NSelect
-            v-model:value="unitFilter"
-            :options="unitFilterOptions"
-            placeholder="Unit"
-            style="width: 100%"
-          />
-          <CreatedDateFilter
-            v-model:preset="createdRangePreset"
-            v-model:from="createdFrom"
-            v-model:to="createdTo"
-            stacked
-          />
-          <div class="more-filters__toggles">
-            <FilterToggleRow
-              v-model="stockFilterEnabled"
-              label="Stock quantity filter"
-              hint="Filter by on-hand stock amount"
-            />
-            <div v-if="stockFilterEnabled" class="more-filters__sub">
-              <NSelect
-                v-model:value="stockFilterMode"
-                :options="stockFilterModeOptions"
-                style="width: 100%"
-              />
-              <NInputNumber
-                v-model:value="stockFilterQty"
-                :min="0"
-                style="width: 100%"
-              />
-            </div>
-          </div>
-        </div>
-      </NDrawerContent>
-    </NDrawer>
+    <RuleFilterBar :fields="ruleFields" />
     <p style="margin: 0 0 8px; font-size: 13px; color: #6b7280">
       Recent print jobs: {{ jobs.length }} loaded
     </p>

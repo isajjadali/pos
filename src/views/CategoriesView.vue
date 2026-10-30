@@ -13,14 +13,12 @@ import {
   NDropdown,
   NButtonGroup,
   NIcon,
-  NDrawer,
-  NDrawerContent,
   useMessage,
   useDialog,
 } from "naive-ui";
 import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
-import CreatedDateFilter from "../components/CreatedDateFilter.vue";
+import RuleFilterBar from "../components/RuleFilterBar.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import OfflinePendingBanner from "../components/OfflinePendingBanner.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
@@ -40,10 +38,13 @@ import {
 import { PRODUCT_CATALOG_UPDATED } from "../services/productCatalog.js";
 import { matchesSearch } from "../utils/textSearch.js";
 import {
+  DATE_RANGE_PRESET_OPTIONS,
   dateRangeFilterActive,
   isTimestampInRange,
   resolveDateRange,
 } from "../utils/dateRange.js";
+import { matchesCompareOp } from "../utils/productAdvancedFilters.js";
+import { COMPARE_OPS, createdDateField, opLabel } from "../utils/ruleFilterOps.js";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -64,16 +65,80 @@ const newName = ref("");
 const createdRangePreset = ref("all");
 const createdFrom = ref(null);
 const createdTo = ref(null);
-const showMoreFilters = ref(false);
+const activeOnly = ref(false);
+const unusedOnly = ref(false);
+const productCountEnabled = ref(false);
+const productCountOp = ref("eq");
+const productCountN = ref(0);
 
-const moreFiltersCount = computed(() =>
-  dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value) ? 1 : 0
-);
+const ruleFields = computed(() => [
+  createdDateField({
+    preset: createdRangePreset,
+    from: createdFrom,
+    to: createdTo,
+    dateRangeFilterActive,
+    DATE_RANGE_PRESET_OPTIONS,
+  }),
+  {
+    id: "unused",
+    label: "Unused category",
+    hint: "No products linked (safe to clean up)",
+    valueType: "flag",
+    occupied: () => unusedOnly.value,
+    chipText: () => "Unused category is true",
+    getDraft: () => ({}),
+    apply: () => {
+      unusedOnly.value = true;
+      productCountEnabled.value = false;
+    },
+    clear: () => {
+      unusedOnly.value = false;
+    },
+  },
+  {
+    id: "productCount",
+    label: "Product count",
+    valueType: "number",
+    ops: COMPARE_OPS,
+    defaultNumber: 0,
+    occupied: () => productCountEnabled.value,
+    chipText: () =>
+      `Product count ${opLabel(productCountOp.value)} ${productCountN.value ?? ""}`,
+    getDraft: () => ({ op: productCountOp.value, number: productCountN.value }),
+    apply: (d) => {
+      productCountOp.value = d.op;
+      productCountN.value = Math.floor(Number(d.number) || 0);
+      productCountEnabled.value = true;
+      unusedOnly.value = false;
+    },
+    clear: () => {
+      productCountEnabled.value = false;
+    },
+  },
+  {
+    id: "activeOnly",
+    label: "Active only",
+    hint: "Hide inactive categories",
+    valueType: "flag",
+    occupied: () => activeOnly.value,
+    chipText: () => "Active only is true",
+    getDraft: () => ({}),
+    apply: () => {
+      activeOnly.value = true;
+    },
+    clear: () => {
+      activeOnly.value = false;
+    },
+  },
+]);
 
 const hasActiveFilters = computed(
   () =>
     Boolean(search.value.trim()) ||
-    dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value)
+    dateRangeFilterActive(createdRangePreset.value, createdFrom.value, createdTo.value) ||
+    unusedOnly.value ||
+    productCountEnabled.value ||
+    activeOnly.value
 );
 
 function clearFilters() {
@@ -81,6 +146,11 @@ function clearFilters() {
   createdRangePreset.value = "all";
   createdFrom.value = null;
   createdTo.value = null;
+  activeOnly.value = false;
+  unusedOnly.value = false;
+  productCountEnabled.value = false;
+  productCountOp.value = "eq";
+  productCountN.value = 0;
   page.value = 1;
 }
 
@@ -101,6 +171,14 @@ const filtered = computed(() => {
   return rows.value.filter((r) => {
     if (search.value.trim() && !matchesSearch(r.name, search.value)) return false;
     if (!isTimestampInRange(r.created_at, range)) return false;
+    if (activeOnly.value && r.is_active === false) return false;
+    if (unusedOnly.value && Number(r.product_count || 0) !== 0) return false;
+    if (
+      productCountEnabled.value &&
+      !matchesCompareOp(Number(r.product_count || 0), productCountOp.value, Number(productCountN.value))
+    ) {
+      return false;
+    }
     return true;
   });
 });
@@ -266,9 +344,22 @@ function onPageSizeChange(s) {
   page.value = 1;
 }
 
-watch([search, createdRangePreset, createdFrom, createdTo], () => {
-  page.value = 1;
-});
+watch(
+  [
+    search,
+    createdRangePreset,
+    createdFrom,
+    createdTo,
+    activeOnly,
+    unusedOnly,
+    productCountEnabled,
+    productCountOp,
+    productCountN,
+  ],
+  () => {
+    page.value = 1;
+  }
+);
 
 onMounted(async () => {
   window.addEventListener(PRODUCT_CATALOG_UPDATED, load);
@@ -303,9 +394,6 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
           placeholder="Search categories"
           style="width: 240px"
         />
-        <NButton :type="moreFiltersCount ? 'warning' : 'default'" @click="showMoreFilters = true">
-          More filters{{ moreFiltersCount ? ` (${moreFiltersCount})` : "" }}
-        </NButton>
         <NButtonGroup>
           <NButton type="primary" :disabled="!supabaseConfigured" @click="openCreate">
             Add category
@@ -331,18 +419,7 @@ onUnmounted(() => window.removeEventListener(PRODUCT_CATALOG_UPDATED, load));
       </NSpace>
     </div>
 
-    <NDrawer v-model:show="showMoreFilters" :width="360" placement="right">
-      <NDrawerContent title="More filters" closable :native-scrollbar="false">
-        <div class="more-filters">
-          <CreatedDateFilter
-            v-model:preset="createdRangePreset"
-            v-model:from="createdFrom"
-            v-model:to="createdTo"
-            stacked
-          />
-        </div>
-      </NDrawerContent>
-    </NDrawer>
+    <RuleFilterBar :fields="ruleFields" />
 
     <div class="app-table-panel">
       <NDataTable
