@@ -26,11 +26,11 @@ export function buildOfflineReceiptDetail(cartLines, { discount = 0, amountRecei
   };
 
   const items = (cartLines || []).map((l, i) => {
-    const base = l.products?.name || "Item";
+    const base = l.products?.name || l.product_name || "Item";
     const name = formatSaleLineName(base, l.sale_unit || "piece", l.pieces_per_unit || 1);
     return {
       id: `${id}-${i}`,
-      product_id: l.product_id,
+      product_id: l.product_id || null,
       product_name_snapshot: name,
       quantity: l.quantity,
       unit_selling_price: Number(l.unit_selling_price) || 0,
@@ -39,16 +39,18 @@ export function buildOfflineReceiptDetail(cartLines, { discount = 0, amountRecei
       pieces_per_unit: Math.max(1, Math.floor(Number(l.pieces_per_unit) || 1)),
       discount_amount: 0,
       unit_cost: 0,
+      is_custom: Boolean(l.is_custom || !l.product_id),
     };
   });
 
   return { sale, items, clientSaleId: id };
 }
 
-/** Piece deltas to apply to local catalog after an offline sale. */
+/** Piece deltas to apply to local catalog after an offline sale. Custom lines skip. */
 export function stockDeltasFromCartLines(cartLines) {
   const map = new Map();
   for (const l of cartLines || []) {
+    if (!l?.product_id || l.is_custom) continue;
     const pcs =
       Math.max(1, Math.floor(Number(l.quantity) || 0)) *
       Math.max(1, Math.floor(Number(l.pieces_per_unit) || 1));

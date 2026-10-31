@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";
 import { computeScheduledDiscountPkr, moneyClose } from "../utils/scheduledDiscount.js";
 import { defaultPosSaleUnit, resolveSaleUnit, unitLabel } from "../utils/saleUnits.js";
+import { formatCustomItemName } from "../utils/posCustomItemHistory.js";
 
 const CART_STORAGE_KEY = "dw_pos_cart_v1";
 
@@ -81,11 +82,12 @@ export const usePosCartStore = defineStore("posCart", () => {
   const heldCarts = computed(() => carts.value.filter((c) => c.status === "on_hold"));
   const openCarts = computed(() => carts.value.filter((c) => c.status === "active"));
 
-  /** Pieces reserved in all open local tabs (active + on hold). */
+  /** Pieces reserved in all open local tabs (active + on hold). Custom lines skip. */
   const reservedPiecesByProductId = computed(() => {
     const map = {};
     for (const cart of carts.value) {
       for (const line of cart.items) {
+        if (!line.product_id || line.is_custom) continue;
         map[line.product_id] = (map[line.product_id] || 0) + linePieces(line);
       }
     }
@@ -106,6 +108,7 @@ export const usePosCartStore = defineStore("posCart", () => {
   }
 
   function maxQtyForLine(line, catalogStock) {
+    if (line?.is_custom || !line?.product_id) return 99999;
     const reserved = reservedPiecesByProductId.value[line.product_id] || 0;
     const stock = Math.floor(Number(catalogStock) || 0);
     const freePieces = stock - reserved + linePieces(line);
@@ -117,8 +120,12 @@ export const usePosCartStore = defineStore("posCart", () => {
     if (typeof findProduct !== "function") return;
     for (const cart of carts.value) {
       for (const line of cart.items) {
+        if (!line.product_id || line.is_custom) continue;
         const fresh = findProduct(line.product_id);
-        if (fresh) line.products = productSnapshot(fresh);
+        if (fresh) {
+          line.products = productSnapshot(fresh);
+          // Keep cashier override; only refresh catalog snapshot
+        }
       }
     }
   }
@@ -178,6 +185,8 @@ export const usePosCartStore = defineStore("posCart", () => {
       pieces_per_unit: resolved.pieces_per_unit,
       unit_selling_price: resolved.unit_selling_price,
       line_total: resolved.unit_selling_price * delta,
+      price_overridden: false,
+      is_custom: false,
       products: productSnapshot(product),
     };
     cart.items.push(line);
@@ -185,11 +194,57 @@ export const usePosCartStore = defineStore("posCart", () => {
     return line;
   }
 
+  /**
+   * Open / custom line — not in catalog, no stock deduction.
+   * @param {{ name: string, unit_selling_price?: number, quantity?: number }} payload
+   */
+  function addCustomItem({ name, unit_selling_price = 0, quantity = 1 } = {}) {
+    const cart = ensureActiveCart();
+    const price = Math.max(0, Number(unit_selling_price) || 0);
+    const label = formatCustomItemName(name, price);
+    if (!label) throw new Error("Item name is required");
+    const qty = Math.max(1, Math.floor(Number(quantity) || 1));
+    const line = {
+      lineId: newLineId(),
+      product_id: null,
+      quantity: qty,
+      sale_unit: "piece",
+      pieces_per_unit: 1,
+      unit_selling_price: price,
+      line_total: price * qty,
+      price_overridden: true,
+      is_custom: true,
+      products: {
+        name: label,
+        barcode: null,
+        sku: null,
+        current_stock: null,
+        selling_price: price,
+      },
+    };
+    cart.items.push(line);
+    focusQtyLineId.value = line.lineId;
+    return line;
+  }
+
+  /** Cashier override for sticker vs catalog price mismatch. */
+  function setLineUnitPrice(lineId, price) {
+    const cart = activeCart.value;
+    if (!cart) return;
+    const line = cart.items.find((l) => l.lineId === lineId);
+    if (!line) return;
+    const next = Math.max(0, Number(price) || 0);
+    line.unit_selling_price = next;
+    line.price_overridden = true;
+    line.line_total = line.quantity * next;
+  }
+
   function setLineSaleUnit(lineId, saleUnit) {
     const cart = activeCart.value;
     if (!cart) return;
     const line = cart.items.find((l) => l.lineId === lineId);
     if (!line) return;
+    if (line.is_custom || !line.product_id) return;
     if (line.sale_unit === saleUnit) return;
 
     const product = {
@@ -226,7 +281,9 @@ export const usePosCartStore = defineStore("posCart", () => {
 
     line.sale_unit = resolved.sale_unit;
     line.pieces_per_unit = resolved.pieces_per_unit;
+    // Unit change → catalog price for that unit (clear sticker override)
     line.unit_selling_price = resolved.unit_selling_price;
+    line.price_overridden = false;
     const max = maxQtyForLine(line, stock);
     if (line.quantity > max) {
       if (max < 1) throw new Error("Not enough stock for this unit");
@@ -249,14 +306,16 @@ export const usePosCartStore = defineStore("posCart", () => {
       removeLine(lineId);
       return;
     }
-    const stock = line.products?.current_stock ?? 0;
-    const max = maxQtyForLine(line, stock);
-    if (next > max) {
-      throw new Error(
-        max <= 0
-          ? "Out of stock for this tab"
-          : `Only ${max} ${unitLabel(line.sale_unit).toLowerCase()}(s) available for this line`
-      );
+    if (!line.is_custom && line.product_id) {
+      const stock = line.products?.current_stock ?? 0;
+      const max = maxQtyForLine(line, stock);
+      if (next > max) {
+        throw new Error(
+          max <= 0
+            ? "Out of stock for this tab"
+            : `Only ${max} ${unitLabel(line.sale_unit).toLowerCase()}(s) available for this line`
+        );
+      }
     }
     line.quantity = next;
     line.line_total = next * Number(line.unit_selling_price);
@@ -419,13 +478,23 @@ export const usePosCartStore = defineStore("posCart", () => {
   }
 
   function linesForCheckout() {
-    return items.value.map((l) => ({
-      product_id: l.product_id,
-      quantity: l.quantity,
-      unit_selling_price: Number(l.unit_selling_price),
-      sale_unit: l.sale_unit || "piece",
-      pieces_per_unit: Math.max(1, Math.floor(Number(l.pieces_per_unit) || 1)),
-    }));
+    return items.value.map((l) => {
+      const row = {
+        product_id: l.product_id || null,
+        quantity: l.quantity,
+        unit_selling_price: Number(l.unit_selling_price),
+        sale_unit: l.sale_unit || "piece",
+        pieces_per_unit: Math.max(1, Math.floor(Number(l.pieces_per_unit) || 1)),
+      };
+      if (l.is_custom || !l.product_id) {
+        row.product_name = String(l.products?.name || "").trim();
+        row.is_custom = true;
+      } else if (l.price_overridden) {
+        // After checkout, write this unit price back to the product catalog
+        row.sync_catalog_price = true;
+      }
+      return row;
+    });
   }
 
   return {
@@ -445,6 +514,8 @@ export const usePosCartStore = defineStore("posCart", () => {
     focusQtyLineId,
     ensureActiveCart,
     addProduct,
+    addCustomItem,
+    setLineUnitPrice,
     setLineSaleUnit,
     clearFocusQtyLine,
     setLineQty,

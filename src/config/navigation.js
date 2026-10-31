@@ -16,6 +16,7 @@ import {
   StatsChartOutline,
   ConstructOutline,
   ListOutline,
+  AddCircleOutline,
 } from "@vicons/ionicons5";
 import { FEATURE_SHOPIFY } from "./features.js";
 
@@ -43,6 +44,7 @@ export const NAV_ITEMS = [
     children: [
       { label: "Insights", key: "insights", icon: AnalyticsOutline, adminOnly: true },
       { label: "Sales History", key: "sales", icon: ReceiptOutline, adminOnly: true },
+      { label: "Custom items", key: "custom-items", icon: AddCircleOutline, adminOnly: true },
       { label: "Price groups", key: "price-groups", icon: PricetagOutline, adminOnly: true },
       { label: "Audit logs", key: "audit-logs", icon: ListOutline, adminOnly: true },
     ],

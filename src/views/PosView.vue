@@ -7,12 +7,15 @@ import {
   NSpace,
   NInput,
   NInputNumber,
+  NAutoComplete,
   NSelect,
   NDataTable,
   NModal,
   NSpin,
   NText,
   NAlert,
+  NForm,
+  NFormItem,
   useMessage,
   useDialog,
 } from "naive-ui";
@@ -50,6 +53,7 @@ import {
   buildOfflineReceiptDetail,
   stockDeltasFromCartLines,
 } from "../utils/offlineSaleReceipt.js";
+import { applyOverriddenPricesToLocalCatalog } from "../utils/posCatalogPriceSync.js";
 import { getActiveScheduledSaleDiscount } from "../services/scheduledDiscounts.js";
 import {
   formatScheduledPromoRule,
@@ -64,6 +68,16 @@ import {
   piecesPerPackOf,
   resolveSaleUnit,
 } from "../utils/saleUnits.js";
+import {
+  listCustomItemHistory,
+  rememberCustomItem,
+  replaceCustomItemHistoryCache,
+  findCustomItemHistory,
+  sanitizeCustomItemName,
+  formatCustomItemName,
+  parseCustomItemName,
+} from "../utils/posCustomItemHistory.js";
+import { listActiveCustomItemsForPos } from "../services/posCustomItems.js";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -88,6 +102,24 @@ const searchResults = ref([]);
 const cashReceived = ref(0);
 const completing = ref(false);
 const scanBuffer = ref("");
+const customItemOpen = ref(false);
+const customItemSaving = ref(false);
+const customItemForm = ref({ name: "", unit_selling_price: null, quantity: 1 });
+const customItemHistory = ref(listCustomItemHistory());
+const customNameRef = ref(null);
+const customPriceRef = ref(null);
+const customQtyRef = ref(null);
+
+const customItemNameOptions = computed(() => {
+  const q = sanitizeCustomItemName(customItemForm.value.name).toLowerCase();
+  return customItemHistory.value
+    .filter((h) => !q || h.name.toLowerCase().includes(q))
+    .slice(0, 15)
+    .map((h) => {
+      const label = formatCustomItemName(h.name, h.unit_selling_price);
+      return { label, value: label };
+    });
+});
 const receiptOpen = ref(false);
 const receiptDetail = ref(null);
 const receiptSettings = ref({});
@@ -434,8 +466,13 @@ const itemColumns = computed(() => [
   {
     title: "Product",
     key: "products",
-    render: (r) => h("span", { class: "pos-line-name" }, r.products?.name ?? "—"),
+    width: 200,
     ellipsis: { tooltip: true },
+    render: (r) =>
+      h("span", { class: "pos-line-name" }, [
+        h("span", { class: "pos-line-name-text" }, r.products?.name ?? "—"),
+        r.is_custom ? h("span", { class: "pos-line-custom-badge" }, "Custom") : null,
+      ]),
   },
   {
     title: "Avail.",
@@ -443,6 +480,9 @@ const itemColumns = computed(() => [
     width: 72,
     align: "center",
     render: (row) => {
+      if (row.is_custom || !row.product_id) {
+        return h("span", { class: "pos-line-disc-none" }, "—");
+      }
       const stock = row.products?.current_stock ?? 0;
       const max = cartStore.maxQtyForLine(row, stock);
       return h("span", { class: max <= 0 ? "pos-avail-warn" : "pos-avail-ok" }, String(max));
@@ -453,6 +493,9 @@ const itemColumns = computed(() => [
     key: "sale_unit",
     width: 118,
     render: (row) => {
+      if (row.is_custom || !row.product_id) {
+        return h("span", { class: "pos-line-disc-none" }, "Piece");
+      }
       const opts = availableUnitsOf(row.products || row);
       return h(NSelect, {
         size: "tiny",
@@ -473,14 +516,32 @@ const itemColumns = computed(() => [
   {
     title: "Price",
     key: "unit_selling_price",
-    width: 88,
-    render: (r) => formatPkr(r.unit_selling_price),
+    width: 168,
+    render: (row) =>
+      h(
+        "div",
+        { class: row.price_overridden ? "pos-line-price pos-line-price--edited" : "pos-line-price" },
+        [
+          h(NInputNumber, {
+            size: "small",
+            value: Number(row.unit_selling_price) || 0,
+            min: 0,
+            precision: 2,
+            style: "width: 148px",
+            onUpdateValue: (v) => {
+              if (v == null) return;
+              cartStore.setLineUnitPrice(row.lineId, v);
+            },
+          }),
+        ]
+      ),
   },
   {
     title: "Disc.",
     key: "line_discount",
     width: 110,
     render: (row) => {
+      if (row.is_custom) return h("span", { class: "pos-line-disc-none" }, "—");
       const promo = scheduledPromoOnCart.value;
       if (!promo || !lineMatchesPromo(promo, row)) {
         return h("span", { class: "pos-line-disc-none" }, "—");
@@ -501,6 +562,7 @@ const itemColumns = computed(() => [
     render: (row) => {
       const stock = row.products?.current_stock ?? 0;
       const max = cartStore.maxQtyForLine(row, stock);
+      const atMax = !row.is_custom && row.product_id && row.quantity >= max;
       return h("div", { class: "pos-line-qty", "data-line-id": row.lineId }, [
         h(NSpace, { size: 4, align: "center" }, () => [
           h(
@@ -512,7 +574,7 @@ const itemColumns = computed(() => [
             size: "small",
             value: row.quantity,
             min: 1,
-            max: max > 0 ? max : 1,
+            max: row.is_custom || !row.product_id ? undefined : max > 0 ? max : 1,
             precision: 0,
             style: "width: 72px",
             onUpdateValue: (v) => {
@@ -529,7 +591,7 @@ const itemColumns = computed(() => [
             NButton,
             {
               size: "tiny",
-              disabled: row.quantity >= max,
+              disabled: atMax,
               onClick: () => changeLineQty(row, row.quantity + 1),
             },
             () => "+"
@@ -547,6 +609,83 @@ const itemColumns = computed(() => [
       h(NButton, { size: "tiny", type: "error", secondary: true, onClick: () => removeLine(row) }, () => "Remove"),
   },
 ]);
+
+async function refreshCustomItemHistory() {
+  if (!supabaseConfigured || !online.value) {
+    customItemHistory.value = listCustomItemHistory();
+    return;
+  }
+  try {
+    const rows = await listActiveCustomItemsForPos({ limit: 80 });
+    customItemHistory.value = replaceCustomItemHistoryCache(rows);
+  } catch {
+    customItemHistory.value = listCustomItemHistory();
+  }
+}
+
+function openCustomItem() {
+  customItemHistory.value = listCustomItemHistory();
+  customItemForm.value = { name: "", unit_selling_price: null, quantity: 1 };
+  customItemOpen.value = true;
+  refreshCustomItemHistory();
+  nextTick(() => {
+    // Modal mounts asynchronously; slight delay so name field can take focus.
+    window.setTimeout(() => focusRef(customNameRef), 40);
+  });
+}
+
+function onCustomItemNameSelect(value) {
+  const parsed = parseCustomItemName(value);
+  const hit = findCustomItemHistory(parsed.base);
+  customItemForm.value.name = hit?.name ?? parsed.base;
+  const price = hit?.unit_selling_price ?? parsed.price;
+  if (price != null) customItemForm.value.unit_selling_price = price;
+}
+
+function onCustomNameKeydown(e) {
+  if (e.key !== "Enter" || e.isComposing) return;
+  // Let autocomplete handle selection when menu is open; otherwise move to price.
+  const menuOpen = document.querySelector(".n-auto-complete-menu");
+  if (menuOpen) return;
+  e.preventDefault();
+  focusRef(customPriceRef);
+}
+
+function onCustomPriceKeydown(e) {
+  if (e.key !== "Enter" || e.isComposing) return;
+  e.preventDefault();
+  focusRef(customQtyRef);
+}
+
+function onCustomQtyKeydown(e) {
+  if (e.key !== "Enter" || e.isComposing) return;
+  e.preventDefault();
+  submitCustomItem();
+}
+
+function submitCustomItem() {
+  customItemSaving.value = true;
+  try {
+    const price = customItemForm.value.unit_selling_price;
+    const displayName = formatCustomItemName(customItemForm.value.name, price);
+    const line = cartStore.addCustomItem({
+      name: displayName,
+      unit_selling_price: price,
+      quantity: customItemForm.value.quantity,
+    });
+    rememberCustomItem({
+      name: sanitizeCustomItemName(displayName),
+      unit_selling_price: line?.unit_selling_price ?? price,
+    });
+    customItemHistory.value = listCustomItemHistory();
+    customItemOpen.value = false;
+    focusLineQty(line?.lineId);
+  } catch (e) {
+    message.error(e.message || "Could not add item");
+  } finally {
+    customItemSaving.value = false;
+  }
+}
 
 function clearLookupUi() {
   scanBuffer.value = "";
@@ -728,6 +867,7 @@ function enqueueOfflineSaleFromCart() {
   for (const { productId, deltaQty } of stockDeltasFromCartLines(cartSnapshot)) {
     productCache.applyStockDelta(productId, deltaQty);
   }
+  applyOverriddenPricesToLocalCatalog(cartSnapshot, productCache);
   const settings = getCachedSettings() || receiptSettings.value || {};
   finishWithLocalReceipt(detail, settings);
   message.success("Sale saved offline — will sync when online");
@@ -736,6 +876,7 @@ function enqueueOfflineSaleFromCart() {
 async function complete() {
   if (!items.value.length) return message.warning("Cart is empty");
   for (const line of items.value) {
+    if (line.is_custom || !line.product_id) continue;
     const max = cartStore.maxQtyForLine(line, line.products?.current_stock ?? 0);
     if (line.quantity > max) {
       return message.error(`Insufficient stock: ${line.products?.name} (max ${max} now)`);
@@ -768,6 +909,8 @@ async function complete() {
       discount: disc,
       amountReceived: receivedAmt,
     });
+    // Server already wrote catalog prices; keep local cache in sync for next scan
+    applyOverriddenPricesToLocalCatalog(cartSnapshot, productCache);
     message.success("Sale completed");
     let detail = null;
     try {
@@ -784,6 +927,7 @@ async function complete() {
     const s = await getSettings().catch(() => getCachedSettings());
     finishWithLocalReceipt(detail, s || receiptSettings.value);
     await refreshPosCatalog();
+    await refreshCustomItemHistory();
   } catch (e) {
     if (isLikelyNetworkError(e)) {
       enqueueOfflineSaleFromCart();
@@ -797,8 +941,10 @@ async function complete() {
 
 async function retryOfflineSync() {
   const result = await drainAllOfflineQueues();
-  if (result?.synced) message.success(`Synced ${result.synced} change(s)`);
-  else if (result?.failed) message.warning(`${result.failed} change(s) failed`);
+  if (result?.synced) {
+    message.success(`Synced ${result.synced} change(s)`);
+    await refreshCustomItemHistory();
+  } else if (result?.failed) message.warning(`${result.failed} change(s) failed`);
   else if (!online.value) message.warning("Still offline");
   else message.info("Nothing to sync");
 }
@@ -865,6 +1011,18 @@ function handleSaleTabSwitchKey(e) {
 function onPosKeyDown(e) {
   const key = e.key;
 
+  if (customItemOpen.value) {
+    if (key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      customItemOpen.value = false;
+      return;
+    }
+    // Allow native Tab / typing inside the modal; block POS F-keys.
+    if (/^F\d{1,2}$/i.test(key)) e.preventDefault();
+    return;
+  }
+
   if (handleSaleTabSwitchKey(e)) return;
 
   if (key === "Tab" && !e.ctrlKey && !e.altKey && !receiptOpen.value) {
@@ -928,7 +1086,8 @@ function onPosKeyDown(e) {
 
   if (/^F\d{1,2}$/i.test(key)) {
     e.preventDefault();
-    if (key === "F2") focusRef(scanRef);
+    if (key === "F1") openCustomItem();
+    else if (key === "F2") focusRef(scanRef);
     else if (key === "F3") focusRef(searchRef);
     else if (key === "F4") focusRef(discountRef);
     else if (key === "F5") focusRef(cashRef);
@@ -979,6 +1138,7 @@ onMounted(() => {
   cartStore.init();
   offlineSales.hydrate();
   refreshPosCatalog();
+  refreshCustomItemHistory();
   refreshScheduledPromoForPos();
   getSettings()
     .then((s) => {
@@ -988,7 +1148,7 @@ onMounted(() => {
       const cached = getCachedSettings();
       if (cached) receiptSettings.value = cached;
     });
-  if (online.value && pendingCount.value) drainAllOfflineQueues();
+  if (online.value && pendingCount.value) drainAllOfflineQueues().then(() => refreshCustomItemHistory());
   focusRef(scanRef);
 });
 
@@ -1002,12 +1162,6 @@ onUnmounted(() => {
 <template>
   <div class="pos-page app-page--fill">
     <h1 style="margin-top: 0; margin-bottom: 8px">POS / New Sale</h1>
-    <p class="pos-hint">
-      <kbd>F7</kbd> hold tab (park sale locally; qty stays reserved in other tabs) ·
-      <kbd>F9</kbd> checkout · <kbd>F8</kbd> new tab · <kbd>F10</kbd> clear cart ·
-      <kbd>Tab</kbd> scan → filter → discount → cash ·
-      <kbd>Shift+F12</kbd> / <kbd>Shift+F11</kbd> next / prev sale tab · Enter on qty → scan
-    </p>
     <SupabaseRequiredAlert />
     <NAlert v-if="!online" type="warning" style="margin-bottom: 12px" :bordered="false">
       Offline — scan and sell from the cached catalog. Sales queue and sync when you are back online.
@@ -1118,15 +1272,16 @@ onUnmounted(() => {
       </div>
 
       <div class="pos-cart-filter pos-search-wrap">
-        <NSpace align="center" :size="8" style="width: 100%">
+        <NSpace align="center" :size="8" style="width: 100%" wrap>
           <NInput
             ref="searchRef"
             v-model:value="cartFilter"
             clearable
             placeholder="Filter cart lines — name, SKU, barcode (F3)"
-            style="flex: 1"
+            style="flex: 1; min-width: 180px"
           />
           <ClearFiltersButton :disabled="!hasCartLineFilter" @clear="clearCartLineFilter" />
+          <NButton size="small" secondary @click="openCustomItem">+ Custom item (F1)</NButton>
         </NSpace>
       </div>
     </div>
@@ -1145,7 +1300,7 @@ onUnmounted(() => {
         size="medium"
         striped
         flex-height
-        :scroll-x="820"
+        :scroll-x="900"
       />
     </div>
 
@@ -1216,23 +1371,62 @@ onUnmounted(() => {
         </NButton>
       </NSpace>
     </NModal>
+
+    <NModal
+      v-model:show="customItemOpen"
+      preset="card"
+      title="Custom item"
+      style="width: min(400px, 96vw)"
+      :mask-closable="false"
+    >
+      <NText depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
+        Not in catalog — sold on this receipt only (no stock change). Past custom items appear as you type.
+      </NText>
+      <NForm label-placement="top">
+        <NFormItem label="Name" required>
+          <NAutoComplete
+            ref="customNameRef"
+            v-model:value="customItemForm.name"
+            :options="customItemNameOptions"
+            clearable
+            placeholder="Item name"
+            style="width: 100%"
+            @select="onCustomItemNameSelect"
+            @keydown="onCustomNameKeydown"
+          />
+        </NFormItem>
+        <NFormItem label="Price (PKR)" required>
+          <NInputNumber
+            ref="customPriceRef"
+            v-model:value="customItemForm.unit_selling_price"
+            :min="0"
+            :precision="2"
+            clearable
+            placeholder="Selling price"
+            style="width: 100%"
+            @keydown="onCustomPriceKeydown"
+          />
+        </NFormItem>
+        <NFormItem label="Qty">
+          <NInputNumber
+            ref="customQtyRef"
+            v-model:value="customItemForm.quantity"
+            :min="1"
+            :precision="0"
+            style="width: 100%"
+            @keydown="onCustomQtyKeydown"
+          />
+        </NFormItem>
+      </NForm>
+      <NSpace justify="end">
+        <NButton @click="customItemOpen = false">Cancel</NButton>
+        <NButton type="primary" :loading="customItemSaving" @click="submitCustomItem">Add to cart</NButton>
+      </NSpace>
+    </NModal>
   </div>
 </template>
 
 <style scoped>
-.pos-hint {
-  margin: -4px 0 12px;
-  font-size: 13px;
-  color: #4b5563;
-}
-.pos-hint kbd {
-  display: inline-block;
-  padding: 1px 5px;
-  font-size: 11px;
-  background: #e5e7eb;
-  border: 1px solid #9ca3af;
-  border-radius: 4px;
-}
 .pos-head {
   flex: 0 0 auto;
   background: #fff;
@@ -1407,9 +1601,35 @@ onUnmounted(() => {
   background: #f0fdfa !important;
 }
 .pos-table :deep(.pos-line-name) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 700;
   color: #111827;
   font-size: 15px;
+  max-width: 100%;
+}
+.pos-line-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pos-line-custom-badge {
+  flex: 0 0 auto;
+  font-weight: 700;
+  font-size: 10px;
+  line-height: 1;
+  color: #0f766e;
+  background: #ccfbf1;
+  border: 1px solid #99f6e4;
+  border-radius: 4px;
+  padding: 3px 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.pos-table :deep(.pos-line-price--edited .n-input__input-el) {
+  font-weight: 700;
+  color: #0f766e;
 }
 .pos-line-disc {
   display: flex;
@@ -1528,7 +1748,6 @@ onUnmounted(() => {
   opacity: 0.85;
 }
 @media (max-width: 768px) {
-  .pos-hint,
   .pos-tab-shortcut-hint {
     display: none;
   }

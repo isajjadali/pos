@@ -23,6 +23,7 @@ import InventoryView from "../views/InventoryView.vue";
 import BarcodePrintingView from "../views/BarcodePrintingView.vue";
 import VendorsView from "../views/VendorsView.vue";
 import SalesHistoryView from "../views/SalesHistoryView.vue";
+import CustomItemsView from "../views/CustomItemsView.vue";
 import AuditLogsView from "../views/AuditLogsView.vue";
 import StaffUsersView from "../views/StaffUsersView.vue";
 import SettingsView from "../views/SettingsView.vue";
@@ -52,6 +53,7 @@ const routes = [
       { path: "barcodes", name: "barcodes", component: BarcodePrintingView },
       { path: "vendors", name: "vendors", component: VendorsView },
       { path: "sales", name: "sales", component: SalesHistoryView },
+      { path: "custom-items", name: "custom-items", component: CustomItemsView },
       { path: "audit-logs", name: "audit-logs", component: AuditLogsView },
       { path: "staff", name: "staff", component: StaffUsersView },
       { path: "settings", name: "settings", component: SettingsView },
