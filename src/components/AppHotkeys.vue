@@ -1,19 +1,20 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from "vue";
+import { onMounted, onUnmounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import KeyboardShortcutsModal from "./KeyboardShortcutsModal.vue";
 import { useAuthStore } from "../stores/auth.js";
 import { navRouteKeysForUser } from "../config/navigation.js";
+import { useShortcutsHelp } from "../composables/useShortcutsHelp.js";
 
 const router = useRouter();
 const route = useRoute();
 const auth = useAuthStore();
-const helpOpen = ref(false);
+const { helpOpen, openShortcutsHelp, closeShortcutsHelp } = useShortcutsHelp();
 
 function onKeyDown(e) {
   if (e.key === "?" && e.shiftKey) {
     e.preventDefault();
-    helpOpen.value = true;
+    openShortcutsHelp();
     return;
   }
 
@@ -26,7 +27,7 @@ function onKeyDown(e) {
   }
 
   if (e.key === "Escape" && helpOpen.value) {
-    helpOpen.value = false;
+    closeShortcutsHelp();
   }
 }
 

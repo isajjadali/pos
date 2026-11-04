@@ -30,7 +30,13 @@ async function onScan(code) {
   }
 
   cartStore.ensureActiveCart();
-  cartStore.addProduct(product, 1);
+  try {
+    // Keep focus on scan field for continuous scanning (do not jump to qty).
+    cartStore.addProduct(product, 1, null, { focusQty: false });
+  } catch (e) {
+    message.error(e?.message || "Cannot add to cart");
+    return;
+  }
 
   if (route.name !== "pos") {
     await router.push({ name: "pos" });
@@ -39,7 +45,15 @@ async function onScan(code) {
 
 onMounted(() => {
   detach = attachBarcodeWedgeListener(onScan, {
-    enabled: () => route.name !== "login",
+    enabled: () => {
+      if (route.name === "login") return false;
+      // POS scan/search field owns typing + Enter — wedge steals keys and clears the box.
+      if (route.name === "pos") {
+        const el = document.activeElement;
+        if (el?.closest?.(".pos-scan-wrap")) return false;
+      }
+      return true;
+    },
   });
 });
 

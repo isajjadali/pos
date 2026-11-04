@@ -145,8 +145,10 @@ export const usePosCartStore = defineStore("posCart", () => {
    * @param {object} product
    * @param {number} [addQty]
    * @param {string} [saleUnit] piece|pack|box — defaults to pack when pack size > 1
+   * @param {{ focusQty?: boolean }} [opts]
    */
-  function addProduct(product, addQty = 1, saleUnit = null) {
+  function addProduct(product, addQty = 1, saleUnit = null, opts = {}) {
+    const focusQty = opts.focusQty !== false;
     const cart = ensureActiveCart();
     const delta = Math.max(1, Math.floor(Number(addQty) || 1));
     const resolved = resolveSaleUnit(product, saleUnit ?? defaultPosSaleUnit(product));
@@ -157,23 +159,27 @@ export const usePosCartStore = defineStore("posCart", () => {
     if (existing) {
       const max = maxQtyForLine(existing, stock);
       if (existing.quantity + delta > max) {
+        if (max <= 0) {
+          throw new Error("Out of stock for this tab — no quantity available.");
+        }
+        if (existing.quantity >= max) {
+          throw new Error("Full quantity in cart — no more stock available for this item.");
+        }
         throw new Error(
-          max <= 0
-            ? "Out of stock for this tab"
-            : `Only ${max} ${unitLabel(existing.sale_unit).toLowerCase()}(s) available (${stock} pcs in store)`
+          `Only ${max} ${unitLabel(existing.sale_unit).toLowerCase()}(s) available (${stock} pcs in store)`
         );
       }
       existing.quantity += delta;
       existing.line_total = existing.quantity * existing.unit_selling_price;
       existing.products = productSnapshot(product);
-      focusQtyLineId.value = existing.lineId;
+      if (focusQty) focusQtyLineId.value = existing.lineId;
       return existing;
     }
     const avail = availableToAdd(product.id, stock, resolved.pieces_per_unit);
     if (avail < delta) {
       throw new Error(
         avail <= 0
-          ? "Out of stock for this tab"
+          ? "Full quantity in cart — no more stock available for this item."
           : `Only ${avail} ${unitLabel(resolved.sale_unit).toLowerCase()}(s) available (${stock} pcs in store)`
       );
     }
@@ -190,7 +196,7 @@ export const usePosCartStore = defineStore("posCart", () => {
       products: productSnapshot(product),
     };
     cart.items.push(line);
-    focusQtyLineId.value = line.lineId;
+    if (focusQty) focusQtyLineId.value = line.lineId;
     return line;
   }
 
@@ -233,7 +239,7 @@ export const usePosCartStore = defineStore("posCart", () => {
     if (!cart) return;
     const line = cart.items.find((l) => l.lineId === lineId);
     if (!line) return;
-    const next = Math.max(0, Number(price) || 0);
+    const next = Math.max(0, Math.round(Number(price) || 0));
     line.unit_selling_price = next;
     line.price_overridden = true;
     line.line_total = line.quantity * next;
@@ -271,7 +277,7 @@ export const usePosCartStore = defineStore("posCart", () => {
         otherSame.quantity = Math.max(otherSame.quantity, next);
         otherSame.line_total = otherSame.quantity * otherSame.unit_selling_price;
         throw new Error(
-          `Merged what stock allows — only ${otherSame.quantity} ${unitLabel(resolved.sale_unit).toLowerCase()}(s) on that line`
+          `Merged what stock allows — only ${otherSame.quantity} ${unitLabel(resolved.sale_unit).toLowerCase()}(s) on that item`
         );
       }
       otherSame.quantity = next;
@@ -313,7 +319,7 @@ export const usePosCartStore = defineStore("posCart", () => {
         throw new Error(
           max <= 0
             ? "Out of stock for this tab"
-            : `Only ${max} ${unitLabel(line.sale_unit).toLowerCase()}(s) available for this line`
+            : `Only ${max} ${unitLabel(line.sale_unit).toLowerCase()}(s) available for this item`
         );
       }
     }

@@ -355,7 +355,7 @@ onMounted(async () => {
             </NSpace>
           </NFormItem>
           <NText depth="3" style="font-size: 12px; display: block; margin: -8px 0 12px">
-            Discount applies only to cart lines whose unit sale price matches this rule.
+            Discount applies only to cart items whose unit sale price matches this rule.
           </NText>
         </template>
 

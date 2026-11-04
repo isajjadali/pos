@@ -409,7 +409,7 @@ onMounted(load);
     <h1 style="margin-top: 0">Custom items</h1>
     <SupabaseRequiredAlert />
     <NText depth="3" style="display: block; margin-bottom: 16px; font-size: 13px">
-      Names sold from POS as custom lines (not catalog products). Rows appear when a sale completes.
+      Names sold from POS as custom items (not catalog products). Rows appear when a sale completes.
       Promote to create a real product when you want stock and barcodes.
     </NText>
 
@@ -457,7 +457,7 @@ onMounted(load);
       :mask-closable="false"
     >
       <NText depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
-        Creates a catalog product. Past custom sale lines stay as snapshots (not rewritten).
+        Creates a catalog product. Past custom sale items stay as snapshots (not rewritten).
       </NText>
       <NForm label-placement="top">
         <NFormItem label="Name" required>

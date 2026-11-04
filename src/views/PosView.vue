@@ -45,6 +45,7 @@ import { usePosCartStore } from "../stores/posCart.js";
 import { useLayoutStore } from "../stores/layout.js";
 import { useOfflineSalesStore } from "../stores/offlineSales.js";
 import { PRODUCT_CATALOG_UPDATED } from "../utils/catalogSync.js";
+import { BARCODE_WEDGE_SCAN_EVENT } from "../utils/barcodeWedge.js";
 import { useRouteQuerySync, routeQuery } from "../composables/useRouteQuerySync.js";
 import { useOnlineStatus } from "../composables/useOnlineStatus.js";
 import { isLikelyNetworkError } from "../services/offlineSaleOutbox.js";
@@ -179,8 +180,17 @@ const searchRef = ref(null);
 const discountRef = ref(null);
 const cashRef = ref(null);
 const selectedSearchIndex = ref(-1);
+/** True only after user moves highlight with ↑/↓ (Enter won't grab first row by default). */
+const searchHighlightByUser = ref(false);
+/** Cart line keyboard selection (↑/↓ then R). */
+const selectedCartLineId = ref(null);
+const pickListRef = ref(null);
 const lookupLoading = ref(false);
 let lookupTimer;
+let scanBurstEndTimer;
+let lastScanKeyAt = 0;
+/** True while keystrokes arrive scanner-fast — defers name search dropdown. */
+const scanInputBurst = ref(false);
 
 function lineMatchesFilter(line, q) {
   const p = line.products;
@@ -303,6 +313,7 @@ function runLiveLookup(term) {
   if (q.length < 1) {
     searchResults.value = [];
     selectedSearchIndex.value = -1;
+    searchHighlightByUser.value = false;
     lookupLoading.value = false;
     return;
   }
@@ -311,6 +322,7 @@ function runLiveLookup(term) {
   if (local) {
     searchResults.value = enrichSearchResults(local);
     selectedSearchIndex.value = firstSelectableSearchIndex(searchResults.value);
+    searchHighlightByUser.value = selectedSearchIndex.value >= 0;
     lookupLoading.value = false;
     return;
   }
@@ -320,10 +332,13 @@ function runLiveLookup(term) {
     .then((rows) => {
       searchResults.value = enrichSearchResults(rows);
       selectedSearchIndex.value = firstSelectableSearchIndex(searchResults.value);
+      searchHighlightByUser.value = selectedSearchIndex.value >= 0;
     })
     .catch((e) => {
       message.error(e.message || "Search failed");
       searchResults.value = [];
+      selectedSearchIndex.value = -1;
+      searchHighlightByUser.value = false;
     })
     .finally(() => {
       lookupLoading.value = false;
@@ -331,8 +346,32 @@ function runLiveLookup(term) {
 }
 
 function scheduleLiveLookup() {
+  if (scanInputBurst.value) return;
   clearTimeout(lookupTimer);
   lookupTimer = setTimeout(() => runLiveLookup(currentLookupTerm()), 280);
+}
+
+function onScanFieldKeydown(e) {
+  if (e.key === "Enter") {
+    scanInputBurst.value = false;
+    clearTimeout(scanBurstEndTimer);
+    lastScanKeyAt = 0;
+    return;
+  }
+  if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
+  const now = Date.now();
+  // Scanner-fast only — do not wipe the field/list for normal typing
+  if (lastScanKeyAt > 0 && now - lastScanKeyAt < 45) {
+    scanInputBurst.value = true;
+    clearTimeout(lookupTimer);
+  }
+  lastScanKeyAt = now;
+  clearTimeout(scanBurstEndTimer);
+  scanBurstEndTimer = setTimeout(() => {
+    scanInputBurst.value = false;
+    lastScanKeyAt = 0;
+    scheduleLiveLookup();
+  }, 180);
 }
 
 watch(scanBuffer, () => {
@@ -352,6 +391,7 @@ function refreshSearchAvailability() {
     searchResults.value[selectedSearchIndex.value]?.pos_available <= 0
   ) {
     selectedSearchIndex.value = firstSelectableSearchIndex(searchResults.value);
+    searchHighlightByUser.value = selectedSearchIndex.value >= 0;
   }
 }
 
@@ -361,6 +401,7 @@ watch(searchResults, (list) => {
   } else if (list.length && selectedSearchIndex.value < 0) {
     selectedSearchIndex.value = firstSelectableSearchIndex(list);
   }
+  searchHighlightByUser.value = selectedSearchIndex.value >= 0;
 });
 
 watch(
@@ -384,18 +425,33 @@ watch(
 );
 
 const lookupTerm = computed(() => currentLookupTerm());
-const scanDropdownOpen = computed(
-  () =>
-    lookupLoading.value ||
-    (lookupTerm.value.length > 0 &&
-      (searchResults.value.length > 0 || (!lookupLoading.value && lookupTerm.value.length > 0)))
-);
+const scanDropdownOpen = computed(() => {
+  if (lookupLoading.value) return true;
+  const term = lookupTerm.value;
+  if (!term.length) return false;
+  if (scanInputBurst.value) return false;
+  if (searchResults.value.length > 0) return true;
+  return term.length >= 3;
+});
 const showPickList = computed(
   () => lookupLoading.value || (lookupTerm.value.length > 0 && searchResults.value.length > 0)
 );
 const showPickEmpty = computed(
   () => !lookupLoading.value && lookupTerm.value.length > 0 && searchResults.value.length === 0
 );
+
+function scrollActivePickIntoView() {
+  nextTick(() => {
+    const root = pickListRef.value;
+    if (!root) return;
+    const active = root.querySelector(".pos-pick-item--active");
+    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+}
+
+watch(selectedSearchIndex, (idx) => {
+  if (idx >= 0 && showPickList.value) scrollActivePickIntoView();
+});
 
 function tabShortLabel(cart) {
   const base = cart.label.replace(/\s*\(hold\)\s*/i, "").trim();
@@ -409,6 +465,7 @@ function tabShortLabel(cart) {
 function returnToScanField() {
   searchResults.value = [];
   selectedSearchIndex.value = -1;
+  searchHighlightByUser.value = false;
   scanBuffer.value = "";
   focusRef(scanRef);
 }
@@ -462,61 +519,85 @@ function onGlobalCatalogUpdated() {
   refreshSearchAvailability();
 }
 
-const itemColumns = computed(() => [
-  {
-    title: "Product",
-    key: "products",
-    width: 200,
-    ellipsis: { tooltip: true },
-    render: (r) =>
-      h("span", { class: "pos-line-name" }, [
-        h("span", { class: "pos-line-name-text" }, r.products?.name ?? "—"),
-        r.is_custom ? h("span", { class: "pos-line-custom-badge" }, "Custom") : null,
-      ]),
-  },
-  {
-    title: "Avail.",
-    key: "avail",
-    width: 72,
-    align: "center",
-    render: (row) => {
-      if (row.is_custom || !row.product_id) {
-        return h("span", { class: "pos-line-disc-none" }, "—");
-      }
-      const stock = row.products?.current_stock ?? 0;
-      const max = cartStore.maxQtyForLine(row, stock);
-      return h("span", { class: max <= 0 ? "pos-avail-warn" : "pos-avail-ok" }, String(max));
+const itemColumns = computed(() => {
+  const rows = items.value;
+  const promo = scheduledPromoOnCart.value;
+
+  const showUnitCol = rows.some((row) => {
+    if (row.is_custom || !row.product_id) return false;
+    return availableUnitsOf(row.products || row).length > 1;
+  });
+
+  const showDiscCol =
+    Boolean(promo) &&
+    rows.some((row) => {
+      if (row.is_custom) return false;
+      if (!lineMatchesPromo(promo, row)) return false;
+      return computeLineScheduledDiscountPkr(promo, row, rows) > 0;
+    });
+
+  const cols = [
+    {
+      title: "Product",
+      key: "products",
+      width: 220,
+      render: (r) =>
+        h("span", { class: "pos-line-name" }, [
+          h("span", { class: "pos-line-name-text" }, r.products?.name ?? "—"),
+          r.is_custom ? h("span", { class: "pos-line-custom-badge" }, "Custom") : null,
+        ]),
     },
-  },
-  {
-    title: "Unit",
-    key: "sale_unit",
-    width: 118,
-    render: (row) => {
-      if (row.is_custom || !row.product_id) {
-        return h("span", { class: "pos-line-disc-none" }, "Piece");
-      }
-      const opts = availableUnitsOf(row.products || row);
-      return h(NSelect, {
-        size: "tiny",
-        value: row.sale_unit || "piece",
-        options: opts,
-        consistentMenuWidth: false,
-        style: "width: 108px",
-        onUpdateValue: (v) => {
-          try {
-            cartStore.setLineSaleUnit(row.lineId, v);
-          } catch (e) {
-            message.error(e.message || "Cannot change unit");
-          }
-        },
-      });
+    {
+      title: "Avail.",
+      key: "avail",
+      width: 72,
+      align: "center",
+      render: (row) => {
+        if (row.is_custom || !row.product_id) {
+          return h("span", { class: "pos-line-disc-none" }, "—");
+        }
+        const stock = row.products?.current_stock ?? 0;
+        const max = cartStore.maxQtyForLine(row, stock);
+        return h("span", { class: max <= 0 ? "pos-avail-warn" : "pos-avail-ok" }, String(max));
+      },
     },
-  },
-  {
+  ];
+
+  if (showUnitCol) {
+    cols.push({
+      title: "Unit",
+      key: "sale_unit",
+      width: 118,
+      render: (row) => {
+        if (row.is_custom || !row.product_id) {
+          return h("span", { class: "pos-line-disc-none" }, "Piece");
+        }
+        const opts = availableUnitsOf(row.products || row);
+        if (opts.length <= 1) {
+          return h("span", { class: "pos-line-disc-none" }, opts[0]?.label || "Piece");
+        }
+        return h(NSelect, {
+          size: "tiny",
+          value: row.sale_unit || "piece",
+          options: opts,
+          consistentMenuWidth: false,
+          style: "width: 108px",
+          onUpdateValue: (v) => {
+            try {
+              cartStore.setLineSaleUnit(row.lineId, v);
+            } catch (e) {
+              message.error(e.message || "Cannot change unit");
+            }
+          },
+        });
+      },
+    });
+  }
+
+  cols.push({
     title: "Price",
     key: "unit_selling_price",
-    width: 168,
+    width: 90,
     render: (row) =>
       h(
         "div",
@@ -524,59 +605,71 @@ const itemColumns = computed(() => [
         [
           h(NInputNumber, {
             size: "small",
-            value: Number(row.unit_selling_price) || 0,
+            value: Math.round(Number(row.unit_selling_price) || 0),
             min: 0,
-            precision: 2,
-            style: "width: 148px",
+            precision: 0,
+            showButton: false,
+            style: "width: 64px",
             onUpdateValue: (v) => {
               if (v == null) return;
-              cartStore.setLineUnitPrice(row.lineId, v);
+              cartStore.setLineUnitPrice(row.lineId, Math.round(Number(v) || 0));
+            },
+            onKeydown: (e) => {
+              const cur = Math.round(Number(row.unit_selling_price) || 0);
+              if (e.key === "+" || e.key === "=") {
+                e.preventDefault();
+                cartStore.setLineUnitPrice(row.lineId, cur + 1);
+                return;
+              }
+              if (e.key === "-" || e.key === "_") {
+                e.preventDefault();
+                if (cur > 0) cartStore.setLineUnitPrice(row.lineId, cur - 1);
+              }
             },
           }),
         ]
       ),
-  },
-  {
-    title: "Disc.",
-    key: "line_discount",
-    width: 110,
-    render: (row) => {
-      if (row.is_custom) return h("span", { class: "pos-line-disc-none" }, "—");
-      const promo = scheduledPromoOnCart.value;
-      if (!promo || !lineMatchesPromo(promo, row)) {
-        return h("span", { class: "pos-line-disc-none" }, "—");
-      }
-      const rule = formatLinePromoRule(promo, row, formatPkr);
-      const amt = computeLineScheduledDiscountPkr(promo, row, items.value);
-      if (amt <= 0) return h("span", { class: "pos-line-disc-none" }, "—");
-      return h("div", { class: "pos-line-disc" }, [
-        h("span", { class: "pos-line-disc-rule" }, rule),
-        h("span", { class: "pos-line-disc-amt" }, `−${formatPkr(amt)}`),
-      ]);
-    },
-  },
-  {
-    title: "Qty",
-    key: "quantity",
-    width: 150,
-    render: (row) => {
-      const stock = row.products?.current_stock ?? 0;
-      const max = cartStore.maxQtyForLine(row, stock);
-      const atMax = !row.is_custom && row.product_id && row.quantity >= max;
-      return h("div", { class: "pos-line-qty", "data-line-id": row.lineId }, [
-        h(NSpace, { size: 4, align: "center" }, () => [
-          h(
-            NButton,
-            { size: "tiny", disabled: row.quantity <= 1, onClick: () => changeLineQty(row, row.quantity - 1) },
-            () => "−"
-          ),
+  });
+
+  if (showDiscCol) {
+    cols.push({
+      title: "Disc.",
+      key: "line_discount",
+      width: 110,
+      render: (row) => {
+        if (row.is_custom) return h("span", { class: "pos-line-disc-none" }, "—");
+        if (!promo || !lineMatchesPromo(promo, row)) {
+          return h("span", { class: "pos-line-disc-none" }, "—");
+        }
+        const rule = formatLinePromoRule(promo, row, formatPkr);
+        const amt = computeLineScheduledDiscountPkr(promo, row, rows);
+        if (amt <= 0) return h("span", { class: "pos-line-disc-none" }, "—");
+        return h("div", { class: "pos-line-disc" }, [
+          h("span", { class: "pos-line-disc-rule" }, rule),
+          h("span", { class: "pos-line-disc-amt" }, `−${formatPkr(amt)}`),
+        ]);
+      },
+    });
+  }
+
+  cols.push(
+    {
+      title: "Qty",
+      key: "quantity",
+      width: 130,
+      render: (row) => {
+        const stock = row.products?.current_stock ?? 0;
+        const max = cartStore.maxQtyForLine(row, stock);
+        const atMax = !row.is_custom && row.product_id && row.quantity >= max;
+        return h("div", { class: "pos-line-qty", "data-line-id": row.lineId }, [
           h(NInputNumber, {
             size: "small",
             value: row.quantity,
             min: 1,
             max: row.is_custom || !row.product_id ? undefined : max > 0 ? max : 1,
             precision: 0,
-            style: "width: 72px",
+            showButton: true,
+            style: "width: 110px",
             onUpdateValue: (v) => {
               if (v != null && v !== row.quantity) changeLineQty(row, v);
             },
@@ -584,31 +677,48 @@ const itemColumns = computed(() => [
               if (e.key === "Enter") {
                 e.preventDefault();
                 returnToScanField();
+                return;
+              }
+              if (e.key === "+" || e.key === "=") {
+                e.preventDefault();
+                if (!atMax) changeLineQty(row, row.quantity + 1);
+                return;
+              }
+              if (e.key === "-" || e.key === "_") {
+                e.preventDefault();
+                if (row.quantity > 1) changeLineQty(row, row.quantity - 1);
               }
             },
           }),
-          h(
-            NButton,
-            {
-              size: "tiny",
-              disabled: atMax,
-              onClick: () => changeLineQty(row, row.quantity + 1),
-            },
-            () => "+"
-          ),
-        ]),
-      ]);
+        ]);
+      },
     },
-  },
-  { title: "Line", key: "line_total", width: 100, render: (r) => formatPkr(r.line_total) },
-  {
-    title: "",
-    key: "remove",
-    width: 80,
-    render: (row) =>
-      h(NButton, { size: "tiny", type: "error", secondary: true, onClick: () => removeLine(row) }, () => "Remove"),
-  },
-]);
+    {
+      title: "Item total",
+      key: "line_total",
+      width: 100,
+      align: "right",
+      render: (r) => formatPkr(Math.round(Number(r.line_total) || 0)),
+    },
+    {
+      title: "",
+      key: "remove",
+      width: 90,
+      render: (row) =>
+        h(
+          NButton,
+          { size: "tiny", type: "error", secondary: true, onClick: () => removeLine(row) },
+          () => "Remove"
+        ),
+    }
+  );
+
+  return cols;
+});
+
+const cartTableScrollX = computed(() =>
+  itemColumns.value.reduce((sum, col) => sum + (Number(col.width) || 160), 0)
+);
 
 async function refreshCustomItemHistory() {
   if (!supabaseConfigured || !online.value) {
@@ -687,39 +797,76 @@ function submitCustomItem() {
   }
 }
 
+const SCAN_AT_MAX_MESSAGE = "Full quantity in cart — no more stock available for this item.";
+
 function clearLookupUi() {
+  clearTimeout(lookupTimer);
+  clearTimeout(scanBurstEndTimer);
+  scanInputBurst.value = false;
+  lastScanKeyAt = 0;
+  lookupLoading.value = false;
   scanBuffer.value = "";
   searchResults.value = [];
   selectedSearchIndex.value = -1;
+  searchHighlightByUser.value = false;
   focusRef(scanRef);
+}
+
+/** After any barcode Enter (added, max stock, or not found) — ready for next scan. */
+function resetScanFieldAfterBarcodeAttempt() {
+  cartStore.clearFocusQtyLine();
+  clearLookupUi();
 }
 
 function focusLineQty(lineId) {
   if (!lineId) return;
-  nextTick(() => {
-    requestAnimationFrame(() => {
-      const wrap = document.querySelector(`.pos-line-qty[data-line-id="${lineId}"]`);
-      const el = wrap?.querySelector("input");
-      if (el) {
-        el.focus();
-        el.select?.();
-      }
-    });
-  });
+  const tryFocus = (attempt = 0) => {
+    const wrap = document.querySelector(`.pos-line-qty[data-line-id="${CSS.escape(String(lineId))}"]`);
+    const el = wrap?.querySelector("input");
+    if (el) {
+      wrap.closest("tr")?.scrollIntoView({ block: "nearest" });
+      el.focus();
+      el.select?.();
+      return;
+    }
+    if (attempt < 8) requestAnimationFrame(() => tryFocus(attempt + 1));
+  };
+  nextTick(() => tryFocus());
 }
 
-function addProduct(product) {
+function addProduct(product, { fromScan = false } = {}) {
   if (product?.pos_available != null && product.pos_available <= 0) {
-    message.warning("Out of stock for this tab (check other held tabs)");
+    message.error(SCAN_AT_MAX_MESSAGE);
+    if (fromScan) resetScanFieldAfterBarcodeAttempt();
     return;
   }
   try {
-    const line = cartStore.addProduct(product);
+    const line = cartStore.addProduct(product, 1, null, { focusQty: !fromScan });
     clearLookupUi();
-    focusLineQty(line?.lineId);
+    if (fromScan) {
+      focusRef(scanRef);
+    } else {
+      focusLineQty(line?.lineId);
+    }
   } catch (e) {
-    message.error(e.message || "Cannot add to cart");
+    const msg = e.message || "Cannot add to cart";
+    message.error(msg);
+    if (fromScan) resetScanFieldAfterBarcodeAttempt();
   }
+}
+
+/** Global HID wedge owns Enter — clear leaked scan-field prefix (e.g. "DW"). */
+function onBarcodeWedgeScan() {
+  clearTimeout(lookupTimer);
+  clearTimeout(scanBurstEndTimer);
+  scanInputBurst.value = false;
+  lastScanKeyAt = 0;
+  lookupLoading.value = false;
+  scanBuffer.value = "";
+  searchResults.value = [];
+  selectedSearchIndex.value = -1;
+  searchHighlightByUser.value = false;
+  nextTick(() => focusRef(scanRef));
 }
 
 watch(focusQtyLineId, (id) => {
@@ -749,7 +896,89 @@ function changeLineQty(row, qty) {
 }
 
 function removeLine(row) {
+  if (selectedCartLineId.value === row.lineId) selectedCartLineId.value = null;
   cartStore.removeLine(row.lineId);
+}
+
+function undoLastCartItem() {
+  const list = items.value;
+  if (!list.length) {
+    message.info("Cart is empty");
+    return;
+  }
+  const last = list[list.length - 1];
+  const name = last.products?.name || "item";
+  cartStore.removeLine(last.lineId);
+  if (selectedCartLineId.value === last.lineId) selectedCartLineId.value = null;
+  message.success(`Removed: ${name}`);
+  focusRef(scanRef);
+}
+
+function focusLastLineQty() {
+  const list = items.value;
+  if (!list.length) {
+    message.info("Cart is empty");
+    return;
+  }
+  const last = list[list.length - 1];
+  selectedCartLineId.value = last.lineId;
+  // Blur scan field so qty input can take focus reliably
+  document.activeElement?.blur?.();
+  focusLineQty(last.lineId);
+}
+
+function closeActiveSaleTab() {
+  const cart = cartStore.activeCart;
+  if (!cart) return;
+  requestCloseTab(cart);
+}
+
+function moveCartLineSelection(delta) {
+  const list = displayItems.value;
+  if (!list.length) return;
+  let idx = list.findIndex((l) => l.lineId === selectedCartLineId.value);
+  if (idx < 0) idx = delta > 0 ? 0 : list.length - 1;
+  else idx = (idx + delta + list.length) % list.length;
+  const line = list[idx];
+  selectedCartLineId.value = line.lineId;
+  nextTick(() => {
+    document
+      .querySelector(`.pos-line-qty[data-line-id="${line.lineId}"]`)
+      ?.closest("tr")
+      ?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function removeSelectedCartLine() {
+  const list = displayItems.value;
+  if (!list.length) return;
+  let idx = list.findIndex((l) => l.lineId === selectedCartLineId.value);
+  if (idx < 0) idx = list.length - 1;
+  const line = list[idx];
+  if (!line) return;
+  removeLine(line);
+  message.success(`Removed: ${line.products?.name || "item"}`);
+  const next = displayItems.value;
+  if (!next.length) {
+    selectedCartLineId.value = null;
+  } else {
+    // Prefer the row that was below the removed one (same index); else the new last
+    selectedCartLineId.value = next[Math.min(idx, next.length - 1)].lineId;
+  }
+  focusRef(scanRef);
+}
+
+function cartRowClassName(row) {
+  const promo = scheduledPromoOnCart.value;
+  const disc = promo && lineMatchesPromo(promo, row);
+  const selected = row.lineId === selectedCartLineId.value;
+  return [
+    "pos-cart-row",
+    disc ? "pos-cart-row--disc" : "",
+    selected ? "pos-cart-row--selected" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function holdOrder() {
@@ -778,7 +1007,7 @@ function confirmClearCart() {
   }
   dialog.warning({
     title: "Clear cart?",
-    content: `Remove all ${items.value.length} line(s) from this tab?`,
+    content: `Remove all ${items.value.length} item(s) from this tab?`,
     positiveText: "Clear",
     negativeText: "Cancel",
     onPositiveClick: () => cancelCart(),
@@ -803,33 +1032,40 @@ function requestCloseTab(cart) {
   });
 }
 
-async function onScanEnter() {
-  if (searchResults.value.length && selectedSearchIndex.value >= 0) {
-    const p = searchResults.value[selectedSearchIndex.value];
-    if (p?.pos_available > 0) addProduct(p);
-    else message.warning("Out of stock for this tab");
-    return;
-  }
-  const code = scanBuffer.value.trim();
-  if (!code) return;
-  const product = isProductCatalogReady()
-    ? findProductByCodeCached(code)
-    : await findProductByBarcode(code);
-  if (product) {
-    addProduct(product);
-    return;
-  }
-  if (searchResults.value.length === 1 && searchResults.value[0].pos_available > 0) {
-    addProduct(searchResults.value[0]);
-    return;
-  }
-  message.error("Not found — pick from list below or keep typing");
+async function resolveProductByScanCode(code) {
+  const term = String(code ?? "").trim();
+  if (!term) return null;
+  return isProductCatalogReady() ? findProductByCodeCached(term) : findProductByBarcode(term);
 }
 
 async function onLookupEnter(e) {
   e?.preventDefault?.();
+  clearTimeout(lookupTimer);
+  scanInputBurst.value = false;
+  clearTimeout(scanBurstEndTimer);
+  lastScanKeyAt = 0;
+
+  const code = scanBuffer.value.trim();
+
+  if (code) {
+    const product = await resolveProductByScanCode(code);
+    if (product) {
+      addProduct(product, { fromScan: true });
+      return;
+    }
+  }
+
+  // Prefer highlighted row (auto = first match; ↑/↓ can change it)
   if (await addHighlightedSearchResult()) return;
-  await onScanEnter();
+
+  if (searchResults.value.length === 1 && searchResults.value[0].pos_available > 0) {
+    addProduct(searchResults.value[0], { fromScan: false });
+    return;
+  }
+
+  if (code) {
+    message.error("Not found — pick from list below or keep typing");
+  }
 }
 
 function finishWithLocalReceipt(detail, settings) {
@@ -1052,10 +1288,14 @@ function onPosKeyDown(e) {
       requestCloseReceipt();
       return;
     }
-    if (searchResults.value.length) {
+    if (searchResults.value.length || scanBuffer.value.trim()) {
       e.preventDefault();
+      const inScan = document.activeElement?.closest?.(".pos-scan-wrap");
       searchResults.value = [];
       selectedSearchIndex.value = -1;
+      if (inScan || scanBuffer.value.trim()) {
+        resetScanFieldAfterBarcodeAttempt();
+      }
       return;
     }
   }
@@ -1069,19 +1309,90 @@ function onPosKeyDown(e) {
   if (searchResults.value.length && (key === "ArrowDown" || key === "ArrowUp")) {
     const active = document.activeElement;
     const inLookup = active?.closest?.(".pos-scan-wrap");
-    if (!inLookup) return;
-    e.preventDefault();
-    const n = searchResults.value.length;
-    let idx = selectedSearchIndex.value;
-    for (let step = 0; step < n; step++) {
-      if (key === "ArrowDown") idx = (idx + 1) % n;
-      else idx = (idx - 1 + n) % n;
-      if (searchResults.value[idx]?.pos_available > 0) {
-        selectedSearchIndex.value = idx;
-        break;
+    if (inLookup) {
+      e.preventDefault();
+      const n = searchResults.value.length;
+      let idx = selectedSearchIndex.value;
+      for (let step = 0; step < n; step++) {
+        if (key === "ArrowDown") idx = idx < 0 ? 0 : (idx + 1) % n;
+        else idx = idx < 0 ? n - 1 : (idx - 1 + n) % n;
+        if (searchResults.value[idx]?.pos_available > 0) {
+          selectedSearchIndex.value = idx;
+          searchHighlightByUser.value = true;
+          break;
+        }
       }
+      return;
     }
+  }
+
+  // Cart ↑/↓ — works from scan field when dropdown is closed (before typing-block)
+  if (
+    (key === "ArrowDown" || key === "ArrowUp") &&
+    !searchResults.value.length &&
+    !lookupLoading.value &&
+    items.value.length &&
+    !receiptOpen.value
+  ) {
+    const active = document.activeElement;
+    if (!active?.closest?.(".pos-line-qty") && !active?.closest?.(".pos-line-price")) {
+      e.preventDefault();
+      e.stopPropagation();
+      moveCartLineSelection(key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+  }
+
+  // Close sale tab: browser owns Ctrl+W — use Alt+W (and Ctrl+Shift+W as alternate)
+  if (key.toLowerCase() === "w" && !receiptOpen.value) {
+    if (e.altKey && !e.ctrlKey && !e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeActiveSaleTab();
+      return;
+    }
+    if (e.ctrlKey && e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeActiveSaleTab();
+      return;
+    }
+    if (e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      message.info("Browser uses Ctrl+W — press Alt+W to close this sale tab");
+      return;
+    }
+  }
+
+  // Remove selected cart line — Alt+R (plain R would type into scan field)
+  if (
+    (key === "r" || key === "R") &&
+    e.altKey &&
+    !e.ctrlKey &&
+    !e.shiftKey &&
+    !receiptOpen.value &&
+    items.value.length
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    removeSelectedCartLine();
     return;
+  }
+
+  if (e.ctrlKey && !e.altKey && !e.shiftKey) {
+    if (e.code === "KeyZ" || key.toLowerCase() === "z") {
+      e.preventDefault();
+      e.stopPropagation();
+      undoLastCartItem();
+      return;
+    }
+    if (e.code === "KeyQ" || key.toLowerCase() === "q") {
+      e.preventDefault();
+      e.stopPropagation();
+      focusLastLineQty();
+      return;
+    }
   }
 
   if (/^F\d{1,2}$/i.test(key)) {
@@ -1124,8 +1435,20 @@ watch(
 );
 
 watch(activeCartId, () => {
+  selectedCartLineId.value = null;
   cartStore.syncScheduledDiscount(activeScheduledPromo.value, items.value);
 });
+
+watch(
+  items,
+  (list) => {
+    if (!selectedCartLineId.value) return;
+    if (!list.some((l) => l.lineId === selectedCartLineId.value)) {
+      selectedCartLineId.value = null;
+    }
+  },
+  { deep: true }
+);
 
 watch(subtotal, () => {
   applyScheduledPromoToCart();
@@ -1135,6 +1458,7 @@ onMounted(() => {
   layoutStore.applyRouteSidebar("pos");
   window.addEventListener("keydown", onPosKeyDown, true);
   window.addEventListener(PRODUCT_CATALOG_UPDATED, onGlobalCatalogUpdated);
+  window.addEventListener(BARCODE_WEDGE_SCAN_EVENT, onBarcodeWedgeScan);
   cartStore.init();
   offlineSales.hydrate();
   refreshPosCatalog();
@@ -1155,12 +1479,14 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener("keydown", onPosKeyDown, true);
   window.removeEventListener(PRODUCT_CATALOG_UPDATED, onGlobalCatalogUpdated);
+  window.removeEventListener(BARCODE_WEDGE_SCAN_EVENT, onBarcodeWedgeScan);
   clearTimeout(lookupTimer);
+  clearTimeout(scanBurstEndTimer);
 });
 </script>
 
 <template>
-  <div class="pos-page app-page--fill">
+  <div class="pos-page">
     <h1 style="margin-top: 0; margin-bottom: 8px">POS / New Sale</h1>
     <SupabaseRequiredAlert />
     <NAlert v-if="!online" type="warning" style="margin-bottom: 12px" :bordered="false">
@@ -1195,6 +1521,8 @@ onUnmounted(() => {
         </div>
       </div>
     </NAlert>
+    <div class="pos-workspace">
+      <section class="pos-cart-col">
     <div class="pos-head">
       <div class="pos-tabs-row">
         <div
@@ -1212,15 +1540,22 @@ onUnmounted(() => {
           <button
             type="button"
             class="pos-tab-close"
-            title="Close tab"
+            title="Close tab (Alt+W)"
             aria-label="Close tab"
             @click.stop="requestCloseTab(c)"
           >
             ×
           </button>
         </div>
-        <NButton size="small" quaternary class="pos-tab-new" @click="newOrder">+ New (F8)</NButton>
-        <span class="pos-tab-shortcut-hint">Shift+F11 / F12 = prev / next tab</span>
+        <NButton size="small" quaternary class="pos-tab-new" @click="newOrder">
+          + New<span class="pos-key-hint pos-key-hint--sm pos-key-hint--inline">(F8)</span>
+        </NButton>
+        <span class="pos-tab-shortcut-hint">
+          <span class="pos-key-hint pos-key-hint--sm">(Shift+F11)</span>
+          <span class="pos-tab-shortcut-sep">/</span>
+          <span class="pos-key-hint pos-key-hint--sm">(Shift+F12)</span>
+          <span class="pos-tab-shortcut-text">prev / next tab</span>
+        </span>
       </div>
 
       <div
@@ -1230,10 +1565,15 @@ onUnmounted(() => {
         <NInput
           ref="scanRef"
           v-model:value="scanBuffer"
-          placeholder="Scan or type barcode / name (F2) — list updates as you type"
+          placeholder="Scan or type barcode / name — list updates as you type"
           @focus="scheduleLiveLookup()"
+          @keydown="onScanFieldKeydown"
           @keydown.enter="onLookupEnter"
-        />
+        >
+          <template #suffix>
+            <span class="pos-key-hint pos-key-hint--suffix" title="Focus scan field">(F2)</span>
+          </template>
+        </NInput>
         <div v-if="scanDropdownOpen" class="pos-pick-panel" role="listbox">
           <div v-if="lookupLoading" class="pos-pick-list pos-pick-status">
             <NSpin size="small" />
@@ -1242,7 +1582,7 @@ onUnmounted(() => {
           <div v-else-if="showPickEmpty" class="pos-pick-list pos-pick-empty">
             <NText depth="3">No matching products in catalog</NText>
           </div>
-          <div v-else-if="showPickList && searchResults.length" class="pos-pick-list">
+          <div v-else-if="showPickList && searchResults.length" ref="pickListRef" class="pos-pick-list">
             <button
               v-for="(p, idx) in searchResults"
               :key="p.id"
@@ -1271,40 +1611,51 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="pos-cart-filter pos-search-wrap">
-        <NSpace align="center" :size="8" style="width: 100%" wrap>
-          <NInput
-            ref="searchRef"
-            v-model:value="cartFilter"
-            clearable
-            placeholder="Filter cart lines — name, SKU, barcode (F3)"
-            style="flex: 1; min-width: 180px"
-          />
-          <ClearFiltersButton :disabled="!hasCartLineFilter" @clear="clearCartLineFilter" />
-          <NButton size="small" secondary @click="openCustomItem">+ Custom item (F1)</NButton>
-        </NSpace>
+      <div class="pos-cart-filter">
+        <NInput
+          ref="searchRef"
+          v-model:value="cartFilter"
+          clearable
+          class="pos-cart-filter-input"
+          placeholder="Filter cart items — name, SKU, barcode"
+        >
+          <template #suffix>
+            <span class="pos-key-hint pos-key-hint--suffix" title="Focus cart item filter">(F3)</span>
+          </template>
+        </NInput>
+        <ClearFiltersButton :disabled="!hasCartLineFilter" @clear="clearCartLineFilter" />
+        <NButton size="medium" class="pos-cart-filter-custom" @click="openCustomItem">
+          + Custom item<span class="pos-key-hint pos-key-hint--sm pos-key-hint--inline">(F1)</span>
+        </NButton>
       </div>
     </div>
 
+    <div class="pos-cart-list-head">
+      <h2 class="pos-cart-title">Items in this sale</h2>
+      <span class="pos-cart-count">{{ displayItems.length }} {{ displayItems.length === 1 ? 'item' : 'items' }}</span>
+    </div>
+
     <div class="app-table-panel pos-table-panel">
+      <p v-if="!displayItems.length" class="pos-cart-empty">
+        No items yet — scan a barcode or search above
+      </p>
       <NDataTable
+        v-else
         class="pos-table"
         :row-key="(row) => row.lineId"
         :columns="itemColumns"
         :data="displayItems"
-        :row-class-name="(row) => {
-          const promo = scheduledPromoOnCart;
-          const on = promo && lineMatchesPromo(promo, row);
-          return on ? 'pos-cart-row pos-cart-row--disc' : 'pos-cart-row';
-        }"
+        :row-class-name="cartRowClassName"
         size="medium"
         striped
-        flex-height
-        :scroll-x="900"
+        :scroll-x="cartTableScrollX"
       />
     </div>
+      </section>
 
+      <aside class="pos-pay-col">
     <div class="pos-checkout">
+      <h2 class="pos-pay-heading">Payment</h2>
       <div v-if="scheduledPromoOnCart" class="pos-scheduled-promo">
         <span>
           Auto discount:
@@ -1322,31 +1673,55 @@ onUnmounted(() => {
       </div>
       <div class="pos-totals">
         <div class="pos-totals-row">
-          <span>Subtotal</span>
-          <strong>{{ formatPkr(subtotal) }}</strong>
+          <span class="pos-pay-label">Sub total</span>
+          <strong class="pos-pay-value">{{ formatPkr(subtotal) }}</strong>
         </div>
-        <div class="pos-totals-row">
-          <span>Discount <span class="pos-kbd-hint">(F4)</span></span>
+        <div class="pos-totals-row pos-totals-row--discount">
+          <div class="pos-pay-label-row">
+            <span class="pos-pay-label">Discount</span>
+            <span class="pos-key-hint pos-key-hint--sm">(F4)</span>
+          </div>
           <NInputNumber ref="discountRef" v-model:value="discount" :min="0" class="pos-num-input" />
         </div>
-        <div class="pos-totals-row pos-totals-row--emph">
-          <span>Total</span>
-          <strong>{{ formatPkr(total) }}</strong>
+        <div class="pos-totals-row pos-totals-row--total">
+          <span class="pos-pay-label">Total</span>
+          <strong class="pos-pay-value pos-pay-value--total">{{ formatPkr(total) }}</strong>
         </div>
         <div class="pos-totals-row">
-          <span>Cash <span class="pos-kbd-hint">(F5 · F6=total)</span></span>
+          <div class="pos-pay-label-row">
+            <span class="pos-pay-label">Cash</span>
+            <span class="pos-key-hint-row">
+              <span class="pos-key-hint pos-key-hint--sm">(F5)</span>
+              <span class="pos-key-hint pos-key-hint--sm" title="Fill cash with total">(F6 = total)</span>
+            </span>
+          </div>
           <NInputNumber ref="cashRef" v-model:value="cashReceived" :min="0" class="pos-num-input" />
         </div>
-        <div class="pos-totals-row">
-          <span>Change</span>
-          <strong>{{ formatPkr(changeDue) }}</strong>
+        <div class="pos-totals-row pos-totals-row--change">
+          <span class="pos-pay-label">Change</span>
+          <strong class="pos-pay-value">{{ formatPkr(changeDue) }}</strong>
         </div>
       </div>
-      <NSpace class="pos-actions" justify="end">
-        <NButton @click="holdOrder">Hold tab (F7)</NButton>
-        <NButton type="warning" @click="confirmClearCart">Clear cart (F10)</NButton>
-        <NButton type="primary" :loading="completing" @click="complete">Complete sale (F9)</NButton>
-      </NSpace>
+      <NButton
+        type="primary"
+        class="pos-complete-btn"
+        block
+        size="large"
+        :loading="completing"
+        @click="complete"
+      >
+        Complete sale<span class="pos-key-hint pos-key-hint--inline">(F9)</span>
+      </NButton>
+      <div class="pos-actions-secondary">
+        <NButton block secondary @click="holdOrder">
+          Hold tab<span class="pos-key-hint pos-key-hint--sm pos-key-hint--inline">(F7)</span>
+        </NButton>
+        <NButton block type="warning" class="pos-clear-cart-btn" @click="confirmClearCart">
+          Clear cart<span class="pos-key-hint pos-key-hint--sm pos-key-hint--inline">(F10)</span>
+        </NButton>
+      </div>
+    </div>
+      </aside>
     </div>
 
     <NModal
@@ -1427,6 +1802,88 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.pos-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) min(360px, 34vw);
+  gap: 14px;
+  align-items: start;
+}
+.pos-cart-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+.pos-cart-col .pos-head {
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+.pos-cart-col .pos-table-panel {
+  border: none;
+  border-radius: 0;
+  min-height: 200px;
+  overflow: visible;
+  padding: 0;
+}
+.pos-cart-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #0f766e;
+  color: #fff;
+  border-bottom: 1px solid #0d9488;
+}
+.pos-cart-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.2;
+}
+.pos-cart-count {
+  flex-shrink: 0;
+  font-size: 0.875rem;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+.pos-cart-empty {
+  margin: 0;
+  padding: 56px 20px;
+  text-align: center;
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #64748b;
+  background: #fafafa;
+  border-top: 1px solid #f1f5f9;
+}
+.pos-cart-col .pos-table-panel:has(.pos-table) {
+  padding: 0 12px 12px;
+  background: #fff;
+}
+.pos-pay-col {
+  position: sticky;
+  top: 0;
+}
+.pos-pay-heading {
+  margin: 0 0 12px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
 .pos-head {
   flex: 0 0 auto;
   background: #fff;
@@ -1437,10 +1894,7 @@ onUnmounted(() => {
 }
 .pos-table-panel {
   background: #fff;
-  border-left: 1px solid #e5e7eb;
-  border-right: 1px solid #e5e7eb;
-  padding: 0 12px;
-  min-height: 220px;
+  min-height: 200px;
 }
 .pos-tabs-row {
   display: flex;
@@ -1512,10 +1966,82 @@ onUnmounted(() => {
 .pos-tab-shortcut-hint {
   flex-shrink: 0;
   align-self: center;
-  font-size: 11px;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35em 0.5em;
+  margin-left: 0.65em;
+}
+.pos-tab-shortcut-sep {
   color: #9ca3af;
+  font-weight: 600;
+}
+.pos-tab-shortcut-text {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
   white-space: nowrap;
-  margin-left: 4px;
+}
+.pos-key-hint {
+  display: inline;
+  font-size: 1em;
+  font-weight: 700;
+  line-height: inherit;
+  color: var(--app-primary);
+  letter-spacing: 0.02em;
+  vertical-align: baseline;
+  background: none;
+  border: none;
+  padding: 0;
+  box-shadow: none;
+}
+.pos-key-hint--sm {
+  font-size: 0.95em;
+}
+.pos-key-hint--inline {
+  margin-left: 0.4em;
+}
+.pos-key-hint--suffix {
+  margin-left: 0.5em;
+  white-space: nowrap;
+}
+.pos-key-hint-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5em;
+}
+.pos-pay-label-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35em 0.5em;
+}
+.pos-scan-wrap :deep(.n-input__suffix) {
+  padding-right: 8px;
+  padding-left: 4px;
+}
+.pos-cart-filter-input :deep(.n-input__suffix) {
+  padding-right: 8px;
+  padding-left: 4px;
+}
+.pos-complete-btn :deep(.n-button__content) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0;
+}
+.pos-actions-secondary :deep(.n-button__content) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.25;
 }
 .pos-scan-wrap {
   flex: 0 0 auto;
@@ -1584,9 +2110,46 @@ onUnmounted(() => {
   color: #dc2626;
 }
 .pos-cart-filter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
   margin-bottom: 0;
-  max-width: 420px;
-  flex: 0 0 auto;
+}
+.pos-cart-filter-input {
+  width: 100%;
+  min-width: 0;
+}
+.pos-cart-filter-custom {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-weight: 700 !important;
+  min-height: 36px;
+  padding-left: 14px !important;
+  padding-right: 14px !important;
+  color: #111827 !important;
+  background-color: #fbbf24 !important;
+  border: 1px solid #b45309 !important;
+  box-shadow: 0 1px 2px rgba(180, 83, 9, 0.15);
+}
+.pos-cart-filter-custom:not(.n-button--disabled):hover {
+  color: #000 !important;
+  background-color: #fcd34d !important;
+  border-color: #92400e !important;
+}
+.pos-cart-filter-custom:not(.n-button--disabled):active,
+.pos-cart-filter-custom:not(.n-button--disabled):focus {
+  color: #000 !important;
+  background-color: #f59e0b !important;
+  border-color: #78350f !important;
+}
+.pos-cart-filter-custom :deep(.n-button__content) {
+  flex-wrap: nowrap;
+}
+.pos-cart-filter-custom .pos-key-hint {
+  color: rgba(17, 24, 39, 0.72);
+  font-weight: 600;
 }
 .pos-table {
   margin-bottom: 0;
@@ -1602,17 +2165,20 @@ onUnmounted(() => {
 }
 .pos-table :deep(.pos-line-name) {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   font-weight: 700;
   color: #111827;
   font-size: 15px;
   max-width: 100%;
+  white-space: normal;
 }
 .pos-line-name-text {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
 }
 .pos-line-custom-badge {
   flex: 0 0 auto;
@@ -1653,6 +2219,16 @@ onUnmounted(() => {
 .pos-table :deep(.pos-cart-row--disc td) {
   background: #fffbeb !important;
 }
+.pos-table :deep(.pos-cart-row--selected td) {
+  background: #bbf7d0 !important;
+  box-shadow: none !important;
+}
+.pos-table :deep(.pos-cart-row--selected.pos-cart-row--disc td) {
+  background: #bbf7d0 !important;
+}
+.pos-table :deep(.pos-cart-row--selected:hover td) {
+  background: #86efac !important;
+}
 .pos-table :deep(.n-data-table-th) {
   font-weight: 700;
   background: #f3f4f6;
@@ -1685,55 +2261,97 @@ onUnmounted(() => {
   color: #111827;
 }
 .pos-checkout {
-  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
   gap: 12px;
-  margin-top: 0;
-  padding: 12px;
-  border: 1px solid #e5e7eb;
-  border-top: 1px solid #e5e7eb;
-  border-radius: 0 0 10px 10px;
-  box-shadow: 0 -4px 12px rgba(15, 23, 42, 0.04);
-  background: #fff;
-  position: relative;
-  z-index: 2;
+  padding: 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
 }
 .pos-totals {
-  width: min(340px, 100%);
+  width: 100%;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 4px 12px;
 }
 .pos-totals-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 6px 0;
-  font-size: 14px;
-  color: #4b5563;
-}
-.pos-totals-row--emph {
-  font-size: 1.05rem;
-  color: #111827;
-  border-top: 1px dashed #e5e7eb;
-  border-bottom: 1px dashed #e5e7eb;
-  margin: 4px 0;
+  gap: 10px;
   padding: 10px 0;
+  border-bottom: 1px solid #f1f5f9;
 }
-.pos-totals-row strong {
-  color: #111827;
+.pos-totals-row:last-child {
+  border-bottom: none;
+}
+.pos-pay-label {
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+.pos-pay-value {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: #0f172a;
   font-variant-numeric: tabular-nums;
 }
+.pos-totals-row--discount :deep(.n-input__input-el) {
+  color: #b45309;
+}
+.pos-totals-row--total {
+  padding: 14px 0;
+  border-top: 2px solid #e2e8f0;
+  border-bottom: 2px solid #e2e8f0;
+  margin: 4px 0;
+}
+.pos-pay-value--total {
+  font-size: 1.65rem;
+  color: #0f766e;
+}
+.pos-totals-row--change .pos-pay-value {
+  font-size: 1.35rem;
+}
 .pos-num-input {
-  width: 140px;
+  width: min(150px, 52%);
 }
-.pos-kbd-hint {
-  font-size: 11px;
-  color: #9ca3af;
+.pos-num-input :deep(.n-input__input-el) {
+  font-size: 1.2rem !important;
+  font-weight: 700;
+  text-align: right;
 }
-.pos-actions {
-  width: 100%;
-  flex-wrap: wrap;
+
+.pos-complete-btn {
+  min-height: 52px;
+  font-size: 1.05rem !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.02em;
+}
+.pos-complete-btn .pos-key-hint {
+  color: rgba(255, 255, 255, 0.92);
+  font-weight: 600;
+}
+.pos-actions-secondary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.pos-actions-secondary :deep(.n-button) {
+  font-weight: 600;
+}
+.pos-clear-cart-btn {
+  min-height: 44px;
+  font-weight: 700 !important;
+  font-size: 0.95rem !important;
+}
+.pos-clear-cart-btn .pos-key-hint {
+  color: rgba(17, 24, 39, 0.72);
+  font-weight: 600;
 }
 .pick-line {
   display: flex;
@@ -1747,42 +2365,31 @@ onUnmounted(() => {
   font-size: 12px;
   opacity: 0.85;
 }
+@media (max-width: 960px) {
+  .pos-workspace {
+    grid-template-columns: 1fr;
+  }
+  .pos-pay-col {
+    position: static;
+  }
+}
 @media (max-width: 768px) {
   .pos-tab-shortcut-hint {
     display: none;
   }
   .pos-cart-filter {
-    max-width: none;
+    grid-template-columns: 1fr;
+  }
+  .pos-cart-filter-custom {
+    justify-self: start;
   }
   .pos-scheduled-promo {
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
   }
-  .pos-checkout {
-    align-items: stretch;
-  }
-  .pos-totals {
-    width: 100%;
-  }
-  .pos-num-input {
-    width: min(160px, 42vw);
-  }
-  .pos-actions {
-    justify-content: stretch !important;
-  }
-  .pos-actions :deep(.n-space) {
-    display: flex;
-    flex-wrap: wrap;
-    width: 100%;
-    gap: 8px;
-  }
-  .pos-actions :deep(.n-button) {
-    flex: 1 1 calc(50% - 4px);
-    min-width: 0;
-  }
-  .pos-table :deep(.n-data-table-table) {
-    min-width: 480px;
+  .pos-actions-secondary {
+    grid-template-columns: 1fr;
   }
 }
 </style>

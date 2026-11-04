@@ -16,6 +16,7 @@ import {
   ReceiptOutline,
   SettingsOutline,
   LogOutOutline,
+  InformationCircleOutline,
 } from "@vicons/ionicons5";
 import { NIcon } from "naive-ui";
 import { useAuthStore } from "../stores/auth.js";
@@ -31,8 +32,10 @@ import GlobalBarcodeScanner from "../components/GlobalBarcodeScanner.vue";
 import ShopifyOrderBell from "../components/ShopifyOrderBell.vue";
 import { useMobileShell } from "../composables/useMobileShell.js";
 import { FEATURE_SHOPIFY } from "../config/features.js";
+import { useShortcutsHelp } from "../composables/useShortcutsHelp.js";
 
 const shopifyEnabled = FEATURE_SHOPIFY;
+const { openShortcutsHelp } = useShortcutsHelp();
 
 const route = useRoute();
 const { isMobile } = useMobileShell();
@@ -80,14 +83,20 @@ const menuOptions = computed(() => visibleNavItems(auth.isAdmin).map(toMenuOptio
 
 const menuExpandedKeys = ref([]);
 
+/** Accordion: at most one top-level group open — keeps the sider short. */
+function setExpandedAccordion(keys) {
+  const list = Array.isArray(keys) ? keys.map(String) : [];
+  const groups = list.filter((k) => k.startsWith("nav-"));
+  const lastGroup = groups.length ? groups[groups.length - 1] : null;
+  menuExpandedKeys.value = lastGroup ? [lastGroup] : [];
+}
+
 watch(
   () => [auth.isAdmin, route.name],
   () => {
     const needed = expandedNavKeysForRoute(auth.isAdmin, route.name);
-    if (!needed.length) return;
-    const set = new Set(menuExpandedKeys.value);
-    for (const k of needed) set.add(k);
-    menuExpandedKeys.value = [...set];
+    // Replace (don't accumulate) so Reports + Operations aren't both forced open.
+    setExpandedAccordion(needed);
   },
   { immediate: true }
 );
@@ -108,7 +117,7 @@ function onMenuSelect(key) {
 }
 
 function onMenuExpandedKeys(keys) {
-  menuExpandedKeys.value = keys;
+  setExpandedAccordion(keys);
 }
 
 async function logout() {
@@ -177,7 +186,7 @@ const mobilePageTitle = computed(() => {
 
 <template>
   <SalesPosLayout v-if="salesOnlyShell" />
-  <NLayout v-else has-sider class="app-shell" style="min-height: 100vh">
+  <NLayout v-else has-sider class="app-shell">
     <div
       v-if="isMobile && mobileNavOpen"
       class="app-sider-backdrop"
@@ -238,14 +247,37 @@ const mobilePageTitle = computed(() => {
         </button>
         <span class="app-mobile-bar-title">{{ mobilePageTitle }}</span>
       </header>
-      <div v-show="!isMobile" class="shortcut-bar">
-        <NText depth="3" style="font-size: 12px">
-          <kbd>Shift</kbd> + <kbd>?</kbd> shortcuts · <kbd>Alt</kbd> + <kbd>1</kbd>–<kbd>9</kbd> pages
-        </NText>
+      <div v-show="!isMobile" class="shortcuts-fab">
         <ShopifyOrderBell v-if="shopifyEnabled" />
+        <NButton
+          quaternary
+          circle
+          size="small"
+          class="shortcuts-info-btn"
+          title="Keyboard shortcuts (Shift + ?)"
+          aria-label="Keyboard shortcuts"
+          @click="openShortcutsHelp"
+        >
+          <template #icon>
+            <NIcon :component="InformationCircleOutline" :size="20" />
+          </template>
+        </NButton>
       </div>
-      <div v-if="isMobile && shopifyEnabled" class="app-mobile-bell">
-        <ShopifyOrderBell />
+      <div v-if="isMobile" class="shortcuts-fab shortcuts-fab--mobile">
+        <ShopifyOrderBell v-if="shopifyEnabled" />
+        <NButton
+          quaternary
+          circle
+          size="small"
+          class="shortcuts-info-btn"
+          title="Keyboard shortcuts"
+          aria-label="Keyboard shortcuts"
+          @click="openShortcutsHelp"
+        >
+          <template #icon>
+            <NIcon :component="InformationCircleOutline" :size="20" />
+          </template>
+        </NButton>
       </div>
       <div class="app-page">
         <RouterView />
@@ -257,14 +289,25 @@ const mobilePageTitle = computed(() => {
 </template>
 
 <style scoped>
+/* Fixed to viewport so the browser window never grows a page scrollbar. */
+.app-shell {
+  position: fixed;
+  inset: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
 .app-sider {
+  height: 100% !important;
+  max-height: 100%;
   overflow: hidden;
 }
 .app-sider :deep(.n-layout-sider-scroll-container) {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  overflow: hidden;
+  height: 100% !important;
+  max-height: 100%;
+  overflow: hidden !important;
 }
 .app-sider :deep(.n-menu-item-content) {
   overflow: hidden;
@@ -293,7 +336,24 @@ const mobilePageTitle = computed(() => {
 .sider-menu-wrap {
   flex: 1 1 auto;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
+  /* Quiet scrollbar — only a hint on hover if content ever overflows */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.sider-menu-wrap:hover {
+  scrollbar-color: #cbd5e1 transparent;
+}
+.sider-menu-wrap::-webkit-scrollbar {
+  width: 6px;
+}
+.sider-menu-wrap::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+.sider-menu-wrap:hover::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
 }
 .brand {
   flex-shrink: 0;
@@ -353,27 +413,27 @@ const mobilePageTitle = computed(() => {
 .sider-user-name {
   color: inherit;
 }
-.shortcut-bar {
-  flex: 0 0 auto;
-  margin: -8px 0 12px;
+.shortcuts-fab {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 40;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 4px;
+  pointer-events: auto;
 }
-.app-mobile-bell {
-  display: flex;
-  justify-content: flex-end;
-  margin: -4px 0 8px;
+.shortcuts-fab--mobile {
+  top: 52px;
+  bottom: auto;
 }
-.shortcut-bar kbd {
-  display: inline-block;
-  padding: 1px 5px;
-  font-size: 11px;
-  font-family: inherit;
-  background: #e5e7eb;
-  border: 1px solid #9ca3af;
-  border-radius: 4px;
+.shortcuts-info-btn {
+  color: #6b7280 !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+}
+.shortcuts-info-btn:hover {
+  color: #0f766e !important;
 }
 .role-pill {
   display: inline-block;

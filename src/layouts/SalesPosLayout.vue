@@ -1,15 +1,18 @@
 <script setup>
 import { useRouter } from "vue-router";
-import { NButton, NText } from "naive-ui";
+import { NButton, NText, NIcon } from "naive-ui";
+import { InformationCircleOutline } from "@vicons/ionicons5";
 import { useAuthStore } from "../stores/auth.js";
 import { supabaseConfigured } from "../lib/supabase.js";
 import GlobalBarcodeScanner from "../components/GlobalBarcodeScanner.vue";
 import AppHotkeys from "../components/AppHotkeys.vue";
 import { useMobileShell } from "../composables/useMobileShell.js";
+import { useShortcutsHelp } from "../composables/useShortcutsHelp.js";
 
 const router = useRouter();
 useMobileShell();
 const auth = useAuthStore();
+const { openShortcutsHelp } = useShortcutsHelp();
 
 async function logout() {
   await auth.signOut();
@@ -24,7 +27,21 @@ async function logout() {
         <strong>Discount World</strong>
         <NText depth="3" style="font-size: 12px">by WABz · New sale</NText>
       </div>
-      <NButton v-if="supabaseConfigured" type="primary" ghost @click="logout">Sign out</NButton>
+      <div class="sales-topbar-actions">
+        <NButton
+          quaternary
+          circle
+          size="small"
+          title="Keyboard shortcuts (Shift + ?)"
+          aria-label="Keyboard shortcuts"
+          @click="openShortcutsHelp"
+        >
+          <template #icon>
+            <NIcon :component="InformationCircleOutline" :size="20" />
+          </template>
+        </NButton>
+        <NButton v-if="supabaseConfigured" type="primary" ghost @click="logout">Sign out</NButton>
+      </div>
     </header>
     <main class="sales-main app-page">
       <RouterView />
@@ -59,6 +76,11 @@ async function logout() {
 .sales-brand strong {
   color: var(--app-primary, #0f766e);
   font-size: 1.15rem;
+}
+.sales-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .sales-main {
   flex: 1;
