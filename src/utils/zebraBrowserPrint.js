@@ -1,17 +1,14 @@
 /**
  * Send ZPL to Zebra via local zebra-bridge on http://127.0.0.1:9288
- * (Windows spooler → ZDesigner ZD220). Started by `npm run zebra-bridge` or `npm run dev`.
- *
- * Waits when the printer reports media out / offline so jobs don't finish
- * (and reconcile) until a new roll is loaded.
+ * Bridge must run on EACH PC that has the label printer (PROD or DEV).
+ * Printer name is auto-detected on that PC — not hardcoded to one laptop.
  */
 
 const BRIDGE_URL = "http://127.0.0.1:9288";
-/** Labels per Windows spool job — one PowerShell call, not one-per-label */
 const LABELS_PER_SPOOL_JOB = 50;
-/** Max time to wait for roll / offline recovery (15 min) */
 const MEDIA_WAIT_MS = 15 * 60 * 1000;
 const STATUS_POLL_MS = 2000;
+const PRINTER_PREF_KEY = "dw_label_printer_name";
 
 function withTimeout(promise, ms, label) {
   return new Promise((resolve, reject) => {
@@ -34,7 +31,8 @@ function sleep(ms) {
 }
 
 function candidateBases() {
-  // Prefer direct bridge (IPv4) — Vite proxy on [::1] often fails on Windows
+  // Prefer direct bridge (IPv4) — works for PROD HTTPS pages (localhost exception)
+  // Vite proxy only exists in local `npm run dev`
   return [BRIDGE_URL, `${window.location.origin}/zebra-browser-print`];
 }
 
@@ -63,7 +61,68 @@ export async function resolveBrowserPrintBase() {
     }
   }
   throw new Error(
-    "Printer bridge is not running on port 9288. Open a terminal in the web folder and run: npm run zebra-bridge  (keep it open). Then try Print again."
+    "Printer bridge is not running on this PC (port 9288). On the laptop that has the Zebra plugged in, open a terminal in the project folder and run: npm run zebra-bridge  — keep that window open, then print again."
+  );
+}
+
+export function getPreferredLabelPrinter() {
+  try {
+    return String(localStorage.getItem(PRINTER_PREF_KEY) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export function setPreferredLabelPrinter(name) {
+  const n = String(name || "").trim();
+  try {
+    if (n) localStorage.setItem(PRINTER_PREF_KEY, n);
+    else localStorage.removeItem(PRINTER_PREF_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Ask the local bridge which Zebra printer exists on THIS Windows PC.
+ * @returns {Promise<{ base: string, name: string, zebraPrinters: string[], host?: string }>}
+ */
+export async function resolveLabelPrinterOnThisPc() {
+  const base = await resolveBrowserPrintBase();
+  const preferred = getPreferredLabelPrinter();
+
+  try {
+    const res = await withTimeout(fetch(`${base}/health`), 8000, "Printer health");
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.ok) {
+      const zebra = Array.isArray(data.zebraPrinters) ? data.zebraPrinters : [];
+      if (preferred && (zebra.includes(preferred) || (data.printers || []).includes(preferred))) {
+        return { base, name: preferred, zebraPrinters: zebra, host: data.host };
+      }
+      if (data.labelPrinter) {
+        return { base, name: data.labelPrinter, zebraPrinters: zebra, host: data.host };
+      }
+      if (data.labelError) throw new Error(data.labelError);
+    }
+  } catch (e) {
+    if (String(e.message || "").includes("No Zebra")) throw e;
+  }
+
+  try {
+    const res = await withTimeout(fetch(`${base}/default`), 8000, "Default printer");
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.name) {
+      return { base, name: data.name, zebraPrinters: [data.name], host: data.host };
+    }
+    if (data?.error) throw new Error(data.error);
+  } catch (e) {
+    if (String(e.message || "").includes("No Zebra") || String(e.message || "").includes("not found")) {
+      throw e;
+    }
+  }
+
+  throw new Error(
+    "No Zebra label printer found on this PC. Install the ZDesigner / Zebra ZPL driver, plug in the printer, then restart: npm run zebra-bridge"
   );
 }
 
@@ -92,7 +151,7 @@ async function postJson(url, body, timeoutMs = 120000) {
 
 function splitLabelChunks(zpl) {
   return String(zpl)
-    .split(/\n(?=\^XA)/)
+    .split(/\r?\n(?=\^XA)/)
     .map((s) => s.trim())
     .filter((s) => s.startsWith("^XA"));
 }
@@ -116,8 +175,7 @@ export async function fetchPrinterStatus(base, printerName) {
 }
 
 /**
- * Block until printer can accept/finish work.
- * @param {'ready' | 'idle'} mode ready = can send next job; idle = finished current work
+ * @param {'ready' | 'idle'} mode
  */
 async function waitForPrinter(base, printerName, mode, { onStatus, timeoutMs = MEDIA_WAIT_MS } = {}) {
   const started = Date.now();
@@ -128,7 +186,6 @@ async function waitForPrinter(base, printerName, mode, { onStatus, timeoutMs = M
     try {
       status = await fetchPrinterStatus(base, printerName);
     } catch (e) {
-      // Older bridge without /printer-status — skip wait rather than hard-fail
       if (String(e.message || "").includes("404") || String(e.message || "").includes("Unknown path")) {
         return { skipped: true, reason: "status-endpoint-missing" };
       }
@@ -168,7 +225,6 @@ async function waitForPrinter(base, printerName, mode, { onStatus, timeoutMs = M
 
     if (mode === "ready") {
       if (status.ready || status.idle || (!status.needsMedia && !status.offline && !status.error)) {
-        // Allow send even if still draining a previous job, unless media/offline
         if (!status.needsMedia && !status.offline) {
           if (status.printing && lastPhase !== "drain") {
             lastPhase = "drain";
@@ -188,7 +244,6 @@ async function waitForPrinter(base, printerName, mode, { onStatus, timeoutMs = M
       continue;
     }
 
-    // mode === 'idle' — wait until queue drained after our send
     if (!status.printing && !status.needsMedia && !status.offline) {
       onStatus?.({ phase: "idle", status });
       return status;
@@ -214,34 +269,33 @@ async function waitForPrinter(base, printerName, mode, { onStatus, timeoutMs = M
 }
 
 /**
- * Send ZPL labels to the Windows ZDesigner ZD220 printer.
- * Batches labels; pauses when Windows reports media out until a roll is loaded.
- * @param {string} zpl
- * @param {{ onProgress?: Function, onStatus?: Function }} [opts]
+ * Local bridge path (same PC as Zebra + agent/bridge running).
  */
-export async function sendZplToZebra(zpl, opts = {}) {
-  const { onProgress, onStatus } = opts;
+async function sendZplViaLocalBridge(zpl, opts = {}) {
+  const { onProgress, onStatus, printer: printerOverride } = opts;
   const chunks = splitLabelChunks(zpl);
-
   if (!chunks.length) throw new Error("No label data to print.");
 
-  const base = await resolveBrowserPrintBase();
-  let printerName = "ZDesigner ZD220-203dpi ZPL";
+  onStatus?.({ phase: "checking", message: "Local printer bridge…" });
+  const resolved = await resolveLabelPrinterOnThisPc();
+  const base = resolved.base;
+  let printerName = String(printerOverride || resolved.name || "").trim();
+  if (!printerName) throw new Error("No label printer resolved on this PC.");
 
   const jobs = [];
   for (let i = 0; i < chunks.length; i += LABELS_PER_SPOOL_JOB) {
-    jobs.push(chunks.slice(i, i + LABELS_PER_SPOOL_JOB).join("\n"));
+    jobs.push(chunks.slice(i, i + LABELS_PER_SPOOL_JOB).join("\r\n"));
   }
 
-  // Before first label: don't start if roll already empty
-  onStatus?.({ phase: "checking", message: "Printer status check…" });
+  onStatus?.({
+    phase: "checking",
+    message: `Using printer “${printerName}”${resolved.host ? ` on ${resolved.host}` : ""}…`,
+  });
   await waitForPrinter(base, printerName, "ready", { onStatus });
 
   let sent = 0;
   for (let j = 0; j < jobs.length; j++) {
     const batchSize = Math.min(LABELS_PER_SPOOL_JOB, chunks.length - sent);
-
-    // Between jobs: wait if roll ran out while previous batch was printing
     await waitForPrinter(base, printerName, "ready", { onStatus });
 
     onProgress?.({
@@ -268,7 +322,6 @@ export async function sendZplToZebra(zpl, opts = {}) {
     if (result?.printerName) printerName = result.printerName;
     sent += batchSize;
 
-    // Wait until this batch finishes (or pause on media out until roll replaced)
     onStatus?.({
       phase: "waiting_print",
       message: "Print finish / roll check…",
@@ -282,16 +335,107 @@ export async function sendZplToZebra(zpl, opts = {}) {
     job: jobs.length,
     jobs: jobs.length,
   });
-  onStatus?.({ phase: "done", message: "All labels printed." });
+  onStatus?.({ phase: "done", message: "All labels printed (local)." });
 
-  return { printerName, labelCount: chunks.length, jobCount: jobs.length };
+  return {
+    mode: "local",
+    printerName,
+    labelCount: chunks.length,
+    jobCount: jobs.length,
+    host: resolved.host,
+  };
+}
+
+/**
+ * Cloud queue → shop print agent (phone / other laptop / PROD without local bridge).
+ */
+async function sendZplViaCloudQueue(zpl, opts = {}) {
+  const { onStatus, onProgress } = opts;
+  const chunks = splitLabelChunks(zpl);
+  if (!chunks.length) throw new Error("No label data to print.");
+
+  const { enqueueZplPrint, waitForZplPrintJob } = await import("../services/zplPrintQueue.js");
+
+  onStatus?.({
+    phase: "queued",
+    message: "Local bridge offline — queueing for shop print agent…",
+  });
+  const row = await enqueueZplPrint(zpl, { labelCount: chunks.length });
+  onProgress?.({ sent: 0, total: chunks.length, job: 1, jobs: 1 });
+  onStatus?.({
+    phase: "queued",
+    message: "Waiting for shop PC agent to print…",
+    jobId: row.id,
+  });
+
+  const done = await waitForZplPrintJob(row.id, {
+    onStatus: (job) => {
+      if (job.status === "pending") {
+        onStatus?.({
+          phase: "queued",
+          message: "Queued — shop agent will pick this up…",
+          job,
+        });
+      } else if (job.status === "printing") {
+        onStatus?.({
+          phase: "printing",
+          message: "Shop printer is printing…",
+          job,
+        });
+      }
+    },
+  });
+
+  onProgress?.({
+    sent: chunks.length,
+    total: chunks.length,
+    job: 1,
+    jobs: 1,
+  });
+  onStatus?.({ phase: "done", message: "All labels printed (shop agent)." });
+
+  return {
+    mode: "queued",
+    jobId: done.id,
+    printerName: done.station_id || "shop-agent",
+    labelCount: chunks.length,
+    jobCount: 1,
+  };
+}
+
+/**
+ * Prefer local bridge; if offline, enqueue to Supabase for the shop print agent.
+ * @param {string} zpl
+ * @param {{ onProgress?: Function, onStatus?: Function, printer?: string, preferQueue?: boolean }} [opts]
+ */
+export async function sendZplToZebra(zpl, opts = {}) {
+  const chunks = splitLabelChunks(zpl);
+  if (!chunks.length) throw new Error("No label data to print.");
+
+  if (!opts.preferQueue) {
+    try {
+      const base = await resolveBrowserPrintBase();
+      if (base) return await sendZplViaLocalBridge(zpl, opts);
+    } catch {
+      /* fall through to cloud queue */
+    }
+  }
+
+  return sendZplViaCloudQueue(zpl, opts);
 }
 
 export async function resolveBrowserPrintBaseForUi() {
   try {
-    const base = await resolveBrowserPrintBase();
-    return { ok: true, base };
+    const resolved = await resolveLabelPrinterOnThisPc();
+    return {
+      ok: true,
+      mode: "local",
+      base: resolved.base,
+      printerName: resolved.name,
+      zebraPrinters: resolved.zebraPrinters,
+      host: resolved.host,
+    };
   } catch (e) {
-    return { ok: false, message: e.message };
+    return { ok: false, mode: "local", message: e.message };
   }
 }

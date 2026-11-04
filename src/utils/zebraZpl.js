@@ -39,13 +39,16 @@ function clamp(n, min, max) {
   return Math.min(max, Math.max(min, n));
 }
 
-/** Escape characters special in ZPL ^FD...^FS */
+/**
+ * Escape for ZPL ^FD fields.
+ * Do not map "_" → "\_" (hex mode blanks/corrupts labels on ZD220).
+ */
 export function zplField(text) {
   return String(text ?? "")
+    .replace(/[^\x20-\x7E]/g, " ")
     .replace(/\\/g, "\\\\")
     .replace(/\^/g, "\\^")
-    .replace(/~/g, "\\~")
-    .replace(/_/g, "\\_");
+    .replace(/~/g, "\\~");
 }
 
 /**
@@ -271,11 +274,30 @@ export function computeRetailLabelLayout(label, widthMm, heightMm, dpi = LABEL_D
 }
 
 function buildRetailLabelZpl(label, widthMm, heightMm, dpi, fontOpts) {
-  const layout = computeRetailLabelLayout(label, widthMm, heightMm, dpi, fontOpts);
+  let w = Number(widthMm);
+  let h = Number(heightMm);
+  if (!Number.isFinite(w) || w < 20) w = 40;
+  if (!Number.isFinite(h) || h < 15) h = 25;
+  // Old default 50×30 on 40×25 stock → blank feeds
+  if (w === 50 && h === 30) {
+    w = 40;
+    h = 25;
+  }
+  const layout = computeRetailLabelLayout(label, w, h, dpi, fontOpts);
   const { pw, ll, sideM, innerW, hasBarcode } = layout;
 
   if (!hasBarcode) {
-    return `^XA^PW${pw}^LL${ll}^LH0,0^FO${sideM},${Math.round(ll / 2)}^A0N,18,18^FB${innerW},1,0,C,0^FDNo barcode^FS^XZ`;
+    return [
+      "^XA",
+      "^MMT",
+      `^PW${pw}`,
+      `^LL${ll}`,
+      "^LH0,0",
+      "^LS0",
+      "^LT0",
+      `^FO${sideM},${Math.round(ll / 2)}^A0N,18,18^FB${innerW},1,0,C,0^FDNo barcode^FS`,
+      "^XZ",
+    ].join("\r\n");
   }
 
   const code = zplField(layout.barcode);
@@ -300,17 +322,21 @@ function buildRetailLabelZpl(label, widthMm, heightMm, dpi, fontOpts) {
     moduleW,
   } = layout;
 
-  return `^XA
-^MMT
-^PW${pw}
-^LL${ll}
-^LH0,0
-^FO${sideM},${titleY}^A0N,${titleFont},${titleFont}^FB${innerW},${layout.titleLineTexts.length},${layout.titleLineGap},C,0^FD${title}^FS
-^FO${sideM},${nameY}^A0N,${nameFont},${nameFont}^FB${innerW},${nameLines},${nameLineGap},C,0^FD${name}^FS
-^FO${barX},${barY}^BY${moduleW},2,${barH}^BCN,${barH},N,N,N^FD${code}^FS
-^FO${sideM},${hriY}^A0N,${idFont},${idFont}^FB${innerW},1,0,C,0^FD${code}^FS
-^FO${sideM},${priceY}^A0N,${priceFont},${priceFont}^FB${innerW},1,0,C,0^FD${price}^FS
-^XZ`;
+  return [
+    "^XA",
+    "^MMT",
+    `^PW${pw}`,
+    `^LL${ll}`,
+    "^LH0,0",
+    "^LS0",
+    "^LT0",
+    `^FO${sideM},${titleY}^A0N,${titleFont},${titleFont}^FB${innerW},${layout.titleLineTexts.length},${layout.titleLineGap},C,0^FD${title}^FS`,
+    `^FO${sideM},${nameY}^A0N,${nameFont},${nameFont}^FB${innerW},${nameLines},${nameLineGap},C,0^FD${name}^FS`,
+    `^FO${barX},${barY}^BY${moduleW},2,${barH}^BCN,${barH},N,N,N^FD${code}^FS`,
+    `^FO${sideM},${hriY}^A0N,${idFont},${idFont}^FB${innerW},1,0,C,0^FD${code}^FS`,
+    `^FO${sideM},${priceY}^A0N,${priceFont},${priceFont}^FB${innerW},1,0,C,0^FD${price}^FS`,
+    "^XZ",
+  ].join("\r\n");
 }
 
 export function buildLabelZpl(label, widthMm = 40, heightMm = 25, dpi = LABEL_DPI, fontOpts = {}) {
@@ -318,5 +344,5 @@ export function buildLabelZpl(label, widthMm = 40, heightMm = 25, dpi = LABEL_DP
 }
 
 export function buildBatchZpl(labels, widthMm = 40, heightMm = 25, dpi = LABEL_DPI, fontOpts = {}) {
-  return labels.map((l) => buildLabelZpl(l, widthMm, heightMm, dpi, fontOpts)).join("\n");
+  return labels.map((l) => buildLabelZpl(l, widthMm, heightMm, dpi, fontOpts)).join("\r\n");
 }

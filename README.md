@@ -16,6 +16,15 @@ npm run dev
 - `npm run build` — production build to `dist/`
 - `npm run preview` — preview build (includes Zebra bridge like dev)
 
+### Shop label printing (PROD — no daily agent)
+
+**Default:** On the shop PC, open the **production website**, click Print. The browser print dialog opens — select **ZDesigner / Zebra** (Windows printer driver must be installed once). No `npm`, bridge, or print-agent required for daily use. Chrome can remember the printer for next time.
+
+**Advanced (optional):**
+- Dropdown “Print via raw ZPL / shop agent” uses local `:9288` bridge or the Supabase `zpl_print_queue` + [`scripts/start-printer-bridge.bat`](scripts/start-printer-bridge.bat) agent (needs `SUPABASE_SERVICE_ROLE_KEY` on that PC only).
+
+Label size defaults to **40×25 mm**. Settings → Shop label printing for sample print.
+
 See `IMPLEMENTATION.md` for feature status.
 
 ## Categories

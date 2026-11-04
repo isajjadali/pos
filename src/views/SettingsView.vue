@@ -17,8 +17,10 @@ import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
 import ScheduledDiscountsCard from "../components/ScheduledDiscountsCard.vue";
 import ReceiptPreview from "../components/ReceiptPreview.vue";
 import LabelLayoutPreview from "../components/LabelLayoutPreview.vue";
+import BarcodePrintSheet from "../components/BarcodePrintSheet.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
 import { getSettings, updateSettings } from "../services/settings.js";
+import { createBrowserPrintSession } from "../utils/browserLabelPrint.js";
 import {
   shopifyTestConnection,
   shopifyPushAll,
@@ -30,7 +32,13 @@ import { useRoute } from "vue-router";
 import { SAMPLE_RECEIPT_ITEMS, SAMPLE_RECEIPT_SALE } from "../utils/receipt.js";
 import { printReceipt } from "../utils/receiptPrint.js";
 import { buildLabelZpl } from "../utils/zebraZpl.js";
-import { sendZplToZebra } from "../utils/zebraBrowserPrint.js";
+import {
+  sendZplToZebra,
+  resolveBrowserPrintBaseForUi,
+  getPreferredLabelPrinter,
+  setPreferredLabelPrinter,
+} from "../utils/zebraBrowserPrint.js";
+import { listPrintStations, stationIsOnline } from "../services/zplPrintQueue.js";
 import {
   DEFAULT_LABEL_FONT_FAMILY,
   DEFAULT_LABEL_FONT_SIZE,
@@ -93,10 +101,68 @@ const saving = ref(false);
 const settingsLoaded = ref(false);
 const savingPosLayout = ref(false);
 const printingLabelSample = ref(false);
+const browserPrintJob = ref(null);
+let browserPrintSession = null;
+const bridgeChecking = ref(false);
+const bridgeStatus = ref({
+  ok: false,
+  message: "Not checked yet",
+  printerName: "",
+  zebraPrinters: [],
+  host: "",
+});
+const shopStations = ref([]);
+const selectedLabelPrinter = ref(getPreferredLabelPrinter() || null);
 
 const labelPreviewName = ref("Non-Stick Spoon");
 const labelPreviewBarcode = ref("DW270C43C441C6A2");
 const labelPreviewPrice = ref(250);
+
+async function refreshPrinterBridge() {
+  bridgeChecking.value = true;
+  try {
+    try {
+      shopStations.value = await listPrintStations();
+    } catch {
+      shopStations.value = [];
+    }
+    const info = await resolveBrowserPrintBaseForUi();
+    if (!info.ok) {
+      const online = shopStations.value.find((s) => stationIsOnline(s));
+      bridgeStatus.value = {
+        ok: false,
+        message: online
+          ? `Local bridge offline — cloud agent online (${online.name || online.host_name})`
+          : info.message ||
+            "Bridge offline. Shop PC pe scripts/start-printer-bridge.bat chalao (Startup pe rakh sakte ho).",
+        printerName: online?.printer_name || "",
+        zebraPrinters: [],
+        host: online?.host_name || "",
+        agentOnline: Boolean(online),
+      };
+      return;
+    }
+    bridgeStatus.value = {
+      ok: true,
+      message: "Local bridge online on this PC",
+      printerName: info.printerName || "",
+      zebraPrinters: info.zebraPrinters || [],
+      host: info.host || "",
+      agentOnline: shopStations.value.some((s) => stationIsOnline(s)),
+    };
+    if (!selectedLabelPrinter.value && info.printerName) {
+      selectedLabelPrinter.value = info.printerName;
+    }
+  } finally {
+    bridgeChecking.value = false;
+  }
+}
+
+function saveLabelPrinterChoice(name) {
+  selectedLabelPrinter.value = name || null;
+  setPreferredLabelPrinter(name || "");
+  message.success(name ? `This PC will use “${name}”` : "Printer set to auto-detect");
+}
 
 async function printSample() {
   try {
@@ -108,31 +174,84 @@ async function printSample() {
   }
 }
 
+function onBrowserPrinted() {
+  browserPrintSession?.resolve({ ok: true });
+  browserPrintJob.value = null;
+  browserPrintSession = null;
+}
+
+function onBrowserPrintError(e) {
+  browserPrintSession?.reject(e instanceof Error ? e : new Error(String(e?.message || e)));
+  browserPrintJob.value = null;
+  browserPrintSession = null;
+}
+
+/** Default: browser → Windows dialog → Zebra (no local agent). */
 async function printLabelSample() {
   printingLabelSample.value = true;
   try {
     const f = form.value;
+    let w = Number(f.label_width_mm) || 40;
+    let h = Number(f.label_height_mm) || 25;
+    if (w === 50 && h === 30) {
+      w = 40;
+      h = 25;
+    }
+    browserPrintSession = createBrowserPrintSession();
+    browserPrintJob.value = {
+      labels: [
+        {
+          name: labelPreviewName.value,
+          barcode: labelPreviewBarcode.value,
+          price: labelPreviewPrice.value,
+        },
+      ],
+      w,
+      h,
+    };
+    await browserPrintSession.done;
+    message.success("Sample sent to print dialog — select Zebra / ZDesigner");
+  } catch (e) {
+    message.error(e.message || "Label print failed");
+    browserPrintJob.value = null;
+    browserPrintSession = null;
+  } finally {
+    printingLabelSample.value = false;
+  }
+}
+
+/** Advanced: raw ZPL via local bridge or cloud shop agent */
+async function printLabelSampleZpl() {
+  printingLabelSample.value = true;
+  try {
+    const f = form.value;
+    let w = Number(f.label_width_mm) || 40;
+    let h = Number(f.label_height_mm) || 25;
+    if (w === 50 && h === 30) {
+      w = 40;
+      h = 25;
+    }
     const zpl = buildLabelZpl(
       {
         name: labelPreviewName.value,
         barcode: labelPreviewBarcode.value,
         price: labelPreviewPrice.value,
       },
-      Number(f.label_width_mm) || 50,
-      Number(f.label_height_mm) || 30,
-      undefined,
-      {
-        fontFamily: f.label_font_family,
-        titleSize: f.label_title_font_size,
-        nameSize: f.label_name_font_size,
-        barcodeSize: f.label_barcode_font_size,
-        priceSize: f.label_price_font_size,
-      }
+      w,
+      h
     );
-    const result = await sendZplToZebra(zpl);
-    message.success(`Sample label sent to ${result.printerName || "Zebra"}`);
+    const result = await sendZplToZebra(zpl, {
+      printer: selectedLabelPrinter.value || undefined,
+    });
+    const via =
+      result.mode === "queued"
+        ? "shop cloud queue"
+        : `local${result.host ? ` (${result.host})` : ""}`;
+    message.success(`Sample printed via ${via} → ${result.printerName || "Zebra"}`);
+    await refreshPrinterBridge();
   } catch (e) {
     message.error(e.message || "Label print failed");
+    await refreshPrinterBridge();
   } finally {
     printingLabelSample.value = false;
   }
@@ -314,7 +433,10 @@ async function runRegisterWebhooks() {
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  refreshPrinterBridge();
+});
 </script>
 
 <template>
@@ -435,6 +557,75 @@ onMounted(load);
     </NCard>
 
     <ScheduledDiscountsCard class="settings-full-section" />
+
+    <BarcodePrintSheet
+      v-if="browserPrintJob"
+      :labels="browserPrintJob.labels"
+      :width-mm="browserPrintJob.w"
+      :height-mm="browserPrintJob.h"
+      @printed="onBrowserPrinted"
+      @print-error="onBrowserPrintError"
+    />
+
+    <NCard title="Shop label printing">
+      <NText depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
+        <b>Default (PROD):</b> Print sample opens the browser dialog — choose Zebra / ZDesigner. No
+        bridge or agent needed on the shop PC (driver must be installed).
+        <br />
+        <b>Advanced:</b> raw ZPL / cloud agent is optional below if you still run
+        <code>print-agent</code> on a shop PC.
+      </NText>
+      <NSpace vertical :size="10">
+        <NText>
+          Local bridge (this browser PC):
+          <b :style="{ color: bridgeStatus.ok ? '#059669' : '#b91c1c' }">
+            {{ bridgeStatus.ok ? "Online" : "Offline" }}
+          </b>
+          <span v-if="bridgeStatus.host"> — {{ bridgeStatus.host }}</span>
+        </NText>
+        <NText>
+          Cloud agent heartbeat:
+          <b
+            :style="{
+              color: shopStations.some((s) => stationIsOnline(s)) ? '#059669' : '#b91c1c',
+            }"
+          >
+            {{
+              shopStations.some((s) => stationIsOnline(s))
+                ? `Online (${shopStations.find((s) => stationIsOnline(s))?.name || "shop"})`
+                : "Offline / not seen"
+            }}
+          </b>
+        </NText>
+        <NText v-if="bridgeStatus.ok && bridgeStatus.printerName" depth="2">
+          Local printer: {{ bridgeStatus.printerName }}
+        </NText>
+        <NText v-else-if="!bridgeStatus.ok" depth="2">
+          {{ bridgeStatus.message }}
+        </NText>
+        <NFormItem v-if="bridgeStatus.zebraPrinters?.length" label="Prefer printer on this PC">
+          <NSelect
+            :value="selectedLabelPrinter"
+            :options="bridgeStatus.zebraPrinters.map((n) => ({ label: n, value: n }))"
+            clearable
+            placeholder="Auto-detect"
+            style="width: min(420px, 100%)"
+            @update:value="saveLabelPrinterChoice"
+          />
+        </NFormItem>
+        <NSpace>
+          <NButton :loading="bridgeChecking" secondary @click="refreshPrinterBridge">
+            Refresh agent status
+          </NButton>
+          <NButton type="primary" :loading="printingLabelSample" @click="printLabelSample">
+            Print sample (browser → Zebra)
+          </NButton>
+          <NButton secondary :loading="printingLabelSample" @click="printLabelSampleZpl">
+            Print sample (raw ZPL / agent)
+          </NButton>
+        </NSpace>
+      </NSpace>
+    </NCard>
 
     <NCard title="Barcode label template">
       <NText depth="3" style="display: block; margin-bottom: 16px; font-size: 13px">

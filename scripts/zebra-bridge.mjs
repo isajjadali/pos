@@ -11,7 +11,9 @@ import path from "node:path";
 
 const LISTEN_HOST = "127.0.0.1";
 const LISTEN_PORT = 9288;
-const DEFAULT_LABEL_PRINTER = "ZDesigner ZD220-203dpi ZPL";
+/** Preferred name when present — override with LABEL_PRINTER_NAME on any PC */
+const DEFAULT_LABEL_PRINTER =
+  process.env.LABEL_PRINTER_NAME || "ZDesigner ZD220-203dpi ZPL";
 const DEFAULT_RECEIPT_PRINTER =
   process.env.RECEIPT_PRINTER_NAME || "Black Copper 80";
 
@@ -51,9 +53,7 @@ function listAllPrinterNames() {
 }
 
 function listZebraPrinters() {
-  return listAllPrinterNames().filter(
-    (n) => /ZD|Zebra|ZPL/i.test(n)
-  );
+  return listAllPrinterNames().filter((n) => /ZD\d|ZDesigner|Zebra|ZPL/i.test(n));
 }
 
 function listReceiptPrinters() {
@@ -62,11 +62,42 @@ function listReceiptPrinters() {
   );
 }
 
+function pickBestZebra(found) {
+  if (!found.length) return null;
+  const prefer = DEFAULT_LABEL_PRINTER;
+  if (prefer && found.includes(prefer)) return prefer;
+  return (
+    found.find((n) => /ZD220/i.test(n)) ||
+    found.find((n) => /ZDesigner/i.test(n)) ||
+    found.find((n) => /Zebra/i.test(n)) ||
+    found.find((n) => /ZPL/i.test(n)) ||
+    found[0]
+  );
+}
+
+/**
+ * Resolve label printer for THIS Windows PC (name differs per laptop).
+ * Requested name is only used when it actually exists in Windows Printers.
+ */
 function resolveLabelPrinter(requested) {
-  if (requested) return requested;
+  const all = listAllPrinterNames();
   const found = listZebraPrinters();
-  if (found.includes(DEFAULT_LABEL_PRINTER)) return DEFAULT_LABEL_PRINTER;
-  return found[0] || DEFAULT_LABEL_PRINTER;
+  const req = String(requested || "").trim();
+
+  if (req) {
+    if (all.includes(req)) return req;
+    const ci = all.find((n) => n.toLowerCase() === req.toLowerCase());
+    if (ci) return ci;
+    const fuzzy = found.find((n) => n.toLowerCase().includes(req.toLowerCase()));
+    if (fuzzy) return fuzzy;
+  }
+
+  const picked = pickBestZebra(found);
+  if (picked) return picked;
+
+  throw new Error(
+    `No Zebra/ZPL label printer found on this PC. Install ZDesigner ZD220 (or any Zebra ZPL) driver, then restart zebra-bridge. Windows printers: ${all.join(", ") || "(none)"}`
+  );
 }
 
 function resolveReceiptPrinter(requested) {
@@ -219,12 +250,11 @@ Write-Output "OK"
 let cachedLabelPrinter = null;
 
 function resolveLabelPrinterCached(requested) {
-  if (requested) {
-    cachedLabelPrinter = requested;
-    return requested;
+  const req = String(requested || "").trim();
+  // Re-resolve when caller asks for a specific name, or cache is empty
+  if (req || !cachedLabelPrinter) {
+    cachedLabelPrinter = resolveLabelPrinter(req || null);
   }
-  if (cachedLabelPrinter) return cachedLabelPrinter;
-  cachedLabelPrinter = resolveLabelPrinter(null);
   return cachedLabelPrinter;
 }
 
@@ -401,15 +431,22 @@ const server = http.createServer(async (req, res) => {
 
   if (url === "/health") {
     let printers = [];
+    let labelPrinter = null;
+    let labelError = null;
     try {
       printers = listAllPrinterNames();
-    } catch {
-      printers = [];
+      labelPrinter = resolveLabelPrinter(null);
+      cachedLabelPrinter = labelPrinter;
+    } catch (e) {
+      labelError = e.message || String(e);
     }
     json(res, 200, {
       ok: true,
       mode: "windows-spooler",
-      labelPrinter: DEFAULT_LABEL_PRINTER,
+      host: os.hostname(),
+      labelPrinter,
+      labelError,
+      zebraPrinters: listZebraPrinters(),
       receiptPrinterHint: DEFAULT_RECEIPT_PRINTER,
       printers,
     });
@@ -417,27 +454,40 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url === "/available") {
+    let labelPrinter = null;
+    try {
+      labelPrinter = resolveLabelPrinter(null);
+    } catch {
+      labelPrinter = null;
+    }
     const printers = listZebraPrinters().map((name) => ({
       name,
       uid: name,
       connection: "usb",
       deviceType: "printer",
+      isDefault: name === labelPrinter,
     }));
-    json(res, 200, { printer: printers });
+    json(res, 200, { printer: printers, defaultPrinter: labelPrinter, host: os.hostname() });
     return;
   }
 
   if (url === "/default") {
-    const name = resolveLabelPrinter(null);
-    json(res, 200, {
-      name,
-      uid: name,
-      connection: "usb",
-      deviceType: "printer",
-      version: 1,
-      provider: "windows-spooler",
-      manufacturer: "Zebra",
-    });
+    try {
+      const name = resolveLabelPrinter(null);
+      cachedLabelPrinter = name;
+      json(res, 200, {
+        name,
+        uid: name,
+        connection: "usb",
+        deviceType: "printer",
+        version: 1,
+        provider: "windows-spooler",
+        manufacturer: "Zebra",
+        host: os.hostname(),
+      });
+    } catch (e) {
+      json(res, 404, { ok: false, error: e.message || String(e) });
+    }
     return;
   }
 
@@ -480,9 +530,15 @@ server.on("error", (err) => {
 });
 
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
-  console.log(`[zebra-bridge] READY http://${LISTEN_HOST}:${LISTEN_PORT}`);
-  console.log(`[zebra-bridge] Labels → ${DEFAULT_LABEL_PRINTER} (POST /windows-print)`);
-  console.log(`[zebra-bridge] Receipts → Black Copper / POS (POST /receipt-print)`);
+  console.log(`[zebra-bridge] READY http://${LISTEN_HOST}:${LISTEN_PORT} (host=${os.hostname()})`);
+  try {
+    const label = resolveLabelPrinter(null);
+    cachedLabelPrinter = label;
+    console.log(`[zebra-bridge] Labels → ${label} (auto-detected on this PC)`);
+  } catch (e) {
+    console.warn(`[zebra-bridge] Labels → not found yet: ${e.message}`);
+  }
+  console.log(`[zebra-bridge] Receipts → ${DEFAULT_RECEIPT_PRINTER} (POST /receipt-print)`);
   try {
     const all = listAllPrinterNames();
     console.log(`[zebra-bridge] Windows printers: ${all.join(", ") || "(none)"}`);

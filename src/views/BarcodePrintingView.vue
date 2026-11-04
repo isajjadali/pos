@@ -19,7 +19,9 @@ import { ChevronDownOutline } from "@vicons/ionicons5";
 import ClearFiltersButton from "../components/ClearFiltersButton.vue";
 import RuleFilterBar from "../components/RuleFilterBar.vue";
 import SupabaseRequiredAlert from "../components/SupabaseRequiredAlert.vue";
+import BarcodePrintSheet from "../components/BarcodePrintSheet.vue";
 import { supabaseConfigured } from "../lib/supabase.js";
+import { createBrowserPrintSession } from "../utils/browserLabelPrint.js";
 import {
   DATE_RANGE_PRESET_OPTIONS,
   dateRangeFilterActive,
@@ -56,7 +58,7 @@ import {
   resolveSaleUnit,
 } from "../utils/saleUnits.js";
 
-const labelSize = ref({ w: 50, h: 30 });
+const labelSize = ref({ w: 40, h: 25 });
 const labelFonts = ref({
   fontFamily: "arial",
   titleSize: 100,
@@ -78,6 +80,9 @@ const customQty = ref(1);
 /** Per-product label unit: { [productId]: 'pack'|'piece'|'box' } */
 const labelUnitById = ref({});
 const jobs = ref([]);
+/** Browser print sheet payload (PROD → Windows print dialog → Zebra) */
+const browserPrintJob = ref(null);
+let browserPrintSession = null;
 
 function productHasPackOrBox(row) {
   return availableUnitsOf(row).length > 1;
@@ -246,11 +251,56 @@ const barcodeActionOptions = computed(() => [
     key: "clear-selection",
     disabled: !selected.value.length,
   },
+  {
+    type: "divider",
+    key: "d1",
+  },
+  {
+    label: "Print selected via raw ZPL / shop agent",
+    key: "print-zpl",
+    disabled: printing.value || !selected.value.length,
+  },
 ]);
 
 function onBarcodeActionSelect(key) {
   if (key === "select-page") selectPage();
   else if (key === "clear-selection") clearSelection();
+  else if (key === "print-zpl") {
+    const idSet = new Set(selected.value);
+    const list = filteredRows.value.filter((r) => idSet.has(r.id));
+    if (!list.length) return message.warning("Select products");
+    runPrint(buildBatchFromRows(list), { mode: "zpl" });
+  }
+}
+
+function onBrowserPrinted() {
+  browserPrintSession?.resolve({ ok: true });
+  browserPrintJob.value = null;
+  browserPrintSession = null;
+}
+
+function onBrowserPrintError(e) {
+  browserPrintSession?.reject(e instanceof Error ? e : new Error(String(e?.message || e)));
+  browserPrintJob.value = null;
+  browserPrintSession = null;
+}
+
+async function printViaBrowser(allLabels) {
+  let w = Number(labelSize.value.w) || 40;
+  let h = Number(labelSize.value.h) || 25;
+  if (w === 50 && h === 30) {
+    w = 40;
+    h = 25;
+  }
+  browserPrintSession = createBrowserPrintSession();
+  browserPrintJob.value = {
+    labels: allLabels,
+    w,
+    h,
+  };
+  printStatus.value = "Opening print dialog — select Zebra / ZDesigner…";
+  await browserPrintSession.done;
+  return { mode: "browser", labelCount: allLabels.length, jobCount: 1 };
 }
 
 const filteredRows = computed(() => {
@@ -543,12 +593,17 @@ async function reconcileBatch(batch) {
   await syncCatalogAfterPrintBatch().catch(() => {});
 }
 
-async function runPrint(batch) {
+/**
+ * @param {Array} batch
+ * @param {{ mode?: 'browser' | 'zpl' }} [opts] default browser (PROD, no local agent)
+ */
+async function runPrint(batch, opts = {}) {
   if (!batch.length) {
     message.warning("Nothing to print — check quantity / pending labels.");
     return;
   }
 
+  const mode = opts.mode === "zpl" ? "zpl" : "browser";
   printing.value = true;
   printingRowId.value = batch.length === 1 ? batch[0].product.id : null;
   try {
@@ -560,40 +615,63 @@ async function runPrint(batch) {
     const totalLabels = allLabels.length;
     printStatus.value = `Building ${totalLabels} labels for ${batch.length} products…`;
 
-    const zpl = buildBatchZpl(allLabels, labelSize.value.w, labelSize.value.h, undefined, labelFonts.value);
-    printStatus.value = `Sending ${totalLabels} labels to printer…`;
-
-    const result = await sendZplToZebra(zpl, {
-      onProgress: ({ sent, total, job, jobs }) => {
-        if (printStatus.value?.includes("roll") || printStatus.value?.includes("offline")) return;
-        printStatus.value =
-          jobs > 1
-            ? `Printing… job ${job}/${jobs} (${sent}/${total} labels)`
-            : `Printing ${total} labels…`;
-      },
-      onStatus: ({ phase, message }) => {
-        if (phase === "media_out") {
+    let result;
+    if (mode === "browser") {
+      result = await printViaBrowser(allLabels);
+    } else {
+      const zpl = buildBatchZpl(
+        allLabels,
+        labelSize.value.w,
+        labelSize.value.h,
+        undefined,
+        labelFonts.value
+      );
+      printStatus.value = `Sending ${totalLabels} labels via ZPL…`;
+      result = await sendZplToZebra(zpl, {
+        onProgress: ({ sent, total, job, jobs }) => {
+          if (
+            printStatus.value?.includes("roll") ||
+            printStatus.value?.includes("offline") ||
+            printStatus.value?.includes("Queued")
+          ) {
+            return;
+          }
           printStatus.value =
-            message || "Label roll empty — load a new roll. Printing paused here.";
-        } else if (phase === "offline") {
-          printStatus.value = message || "Printer offline — check power/USB.";
-        } else if (message) {
-          printStatus.value = message;
-        }
-      },
-    });
+            jobs > 1
+              ? `Printing… job ${job}/${jobs} (${sent}/${total} labels)`
+              : `Printing ${total} labels…`;
+        },
+        onStatus: ({ phase, message: statusMsg }) => {
+          if (phase === "media_out") {
+            printStatus.value =
+              statusMsg || "Label roll empty — load a new roll. Printing paused here.";
+          } else if (phase === "offline") {
+            printStatus.value = statusMsg || "Printer offline — check power/USB.";
+          } else if (phase === "queued") {
+            printStatus.value = statusMsg || "Queued for shop print agent…";
+          } else if (statusMsg) {
+            printStatus.value = statusMsg;
+          }
+        },
+      });
+    }
 
-    // Only mark printed after printer finished (incl. wait for new roll if needed)
     printStatus.value = "Updating print records…";
     await reconcileBatch(batch);
 
     message.success(
-      `Sent ${result.labelCount} labels (${result.jobCount} spool job${result.jobCount === 1 ? "" : "s"}).`
+      result.mode === "browser"
+        ? `Sent ${result.labelCount} labels to the print dialog (choose Zebra).`
+        : result.mode === "queued"
+          ? `Printed ${result.labelCount} labels via shop agent.`
+          : `Sent ${result.labelCount} labels (${result.jobCount} spool job${result.jobCount === 1 ? "" : "s"}).`
     );
     selected.value = [];
     await load({ silent: true });
   } catch (e) {
     message.error(e.message || "Print failed");
+    browserPrintJob.value = null;
+    browserPrintSession = null;
   } finally {
     printing.value = false;
     printingRowId.value = null;
@@ -645,8 +723,20 @@ onMounted(() => {
 
 <template>
   <div class="app-page app-page--fill">
+    <BarcodePrintSheet
+      v-if="browserPrintJob"
+      :labels="browserPrintJob.labels"
+      :width-mm="browserPrintJob.w"
+      :height-mm="browserPrintJob.h"
+      @printed="onBrowserPrinted"
+      @print-error="onBrowserPrintError"
+    />
     <h1 style="margin-top: 0">Barcode printing</h1>
     <SupabaseRequiredAlert />
+    <NText depth="3" style="display: block; margin: -4px 0 12px; font-size: 13px">
+      Print opens the browser dialog — select <b>ZDesigner / Zebra</b> (no local bridge needed on PROD).
+      Advanced raw ZPL is under the Print dropdown.
+    </NText>
     <NRadioGroup v-model:value="printMode" style="margin-bottom: 12px">
       <NSpace>
         <NRadio value="unprinted">Print new / unprinted</NRadio>
