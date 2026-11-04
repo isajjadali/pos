@@ -5,6 +5,24 @@ function countLabelsInZpl(zpl) {
   return Math.max(1, m ? m.length : 1);
 }
 
+function isMissingRelationError(error) {
+  const msg = String(error?.message || error || "");
+  const code = String(error?.code || "");
+  return (
+    code === "PGRST205" ||
+    code === "42P01" ||
+    /schema cache/i.test(msg) ||
+    /could not find the table/i.test(msg) ||
+    /relation .* does not exist/i.test(msg)
+  );
+}
+
+function missingQueueHint() {
+  return new Error(
+    "Cloud print queue is not set up on this database (zpl_print_queue missing). Use normal Print (browser → Zebra dialog) — no migration/agent needed. Or apply migration 20251104130000_zpl_print_queue.sql for the optional shop agent."
+  );
+}
+
 /**
  * Enqueue ZPL for the shop print agent (any device → shop Zebra).
  * @param {string} zpl
@@ -30,7 +48,10 @@ export async function enqueueZplPrint(zpl, opts = {}) {
     })
     .select("id, status, label_count, created_at")
     .single();
-  if (error) throw error;
+  if (error) {
+    if (isMissingRelationError(error)) throw missingQueueHint();
+    throw error;
+  }
   return data;
 }
 
@@ -41,7 +62,10 @@ export async function getZplPrintJob(id) {
     .select("id, status, error, label_count, created_at, claimed_at, printed_at, station_id")
     .eq("id", id)
     .maybeSingle();
-  if (error) throw error;
+  if (error) {
+    if (isMissingRelationError(error)) throw missingQueueHint();
+    throw error;
+  }
   return data;
 }
 
@@ -78,7 +102,11 @@ export async function listPrintStations() {
     .select("id, name, host_name, printer_name, last_seen_at")
     .order("last_seen_at", { ascending: false })
     .limit(20);
-  if (error) throw error;
+  if (error) {
+    // Table optional until migration applied — don't break Settings / print UI
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
   return data ?? [];
 }
 

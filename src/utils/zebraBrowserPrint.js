@@ -404,7 +404,9 @@ async function sendZplViaCloudQueue(zpl, opts = {}) {
 }
 
 /**
- * Prefer local bridge; if offline, enqueue to Supabase for the shop print agent.
+ * Raw ZPL path: local bridge first.
+ * Cloud queue ONLY when preferQueue:true (optional shop agent) — never auto-fallback,
+ * so PROD PCs without migration/agent don't hit missing zpl_print_queue.
  * @param {string} zpl
  * @param {{ onProgress?: Function, onStatus?: Function, printer?: string, preferQueue?: boolean }} [opts]
  */
@@ -412,16 +414,22 @@ export async function sendZplToZebra(zpl, opts = {}) {
   const chunks = splitLabelChunks(zpl);
   if (!chunks.length) throw new Error("No label data to print.");
 
-  if (!opts.preferQueue) {
-    try {
-      const base = await resolveBrowserPrintBase();
-      if (base) return await sendZplViaLocalBridge(zpl, opts);
-    } catch {
-      /* fall through to cloud queue */
-    }
+  if (opts.preferQueue) {
+    return sendZplViaCloudQueue(zpl, opts);
   }
 
-  return sendZplViaCloudQueue(zpl, opts);
+  try {
+    const base = await resolveBrowserPrintBase();
+    if (base) return await sendZplViaLocalBridge(zpl, opts);
+  } catch (e) {
+    throw new Error(
+      `${e.message || "Local printer bridge offline."} Use normal Print (browser → Zebra dialog) instead of raw ZPL, or start the shop print agent.`
+    );
+  }
+
+  throw new Error(
+    "Local printer bridge offline. Use normal Print (browser → Zebra dialog) — no agent setup needed."
+  );
 }
 
 export async function resolveBrowserPrintBaseForUi() {
